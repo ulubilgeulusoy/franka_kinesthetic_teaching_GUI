@@ -19,6 +19,7 @@ on the Franka Research 3 robotic arm using ROS 2.
 ## Installation
 ```bash
 git clone https://github.com/YOUR_USERNAME/franka_kinesthetic_teaching_GUI.git
+```
 
 
 ## Running
