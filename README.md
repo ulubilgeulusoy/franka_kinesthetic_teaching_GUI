@@ -23,18 +23,20 @@ git clone https://github.com/YOUR_USERNAME/franka_kinesthetic_teaching_GUI.git
 
 
 ## Running
-# Make sure that robot arm is online and joints unlocked
-# FCI mode is active
-# Open new terminal
+Make sure that robot arm is online and joints unlocked
+FCI mode is active
+Open new terminal
+```
 cd franka_kinesthetic_teaching_GUI
 chmod +x franka_teach_run_gui_v2.py
 ./franka_teach_run_gui_v2.py
+```
 
 ## Usage
-# Click Start Teach (Record) to put the robot in gravity compensation mode.
-# Move the arm by hand to teach a trajectory.
-# Click Stop Teach (Save) to store it as a CSV.
-# Click Run Trajectory, select a CSV, and the robot will execute it.
+Click Start Teach (Record) to put the robot in gravity compensation mode.
+Move the arm by hand to teach a trajectory.
+Click Stop Teach (Save) to store it as a CSV.
+Click Run Trajectory, select a CSV, and the robot will execute it.
 
 ## Acknowledgements
-# This project was developed with assistance from ChatGPT 5.0 by OpenAI.
+This project was developed with assistance from ChatGPT 5.0 by OpenAI.
