@@ -17,7 +17,7 @@ A Tkinter-based GUI for **kinesthetic teaching** and **trajectory playback** on 
 
 ## Installation
 ```bash
-git clone https://github.com/YOUR_USERNAME/franka_kinesthetic_teaching_GUI.git
+git clone https://github.com/ulubilgeulusoy/franka_kinesthetic_teaching_GUI.git
 ```
 
 
