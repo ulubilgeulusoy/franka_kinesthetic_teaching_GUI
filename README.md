@@ -1,7 +1,6 @@
 # franka_kinesthetic_teaching_GUI
 
-A Tkinter-based GUI for **kinesthetic teaching** and **trajectory playback**  
-on the Franka Research 3 robotic arm using ROS 2.
+A Tkinter-based GUI for **kinesthetic teaching** and **trajectory playback** on the Franka Research 3 robotic arm using ROS 2.
 
 ## Features
 - **Teach mode**:  
