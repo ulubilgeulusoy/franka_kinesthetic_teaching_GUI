@@ -25,15 +25,7 @@ git clone https://github.com/ulubilgeulusoy/franka_kinesthetic_teaching_GUI.git
 - Make sure that robot arm is online and joints unlocked
 - FCI mode is active
 - Open new terminal
-```
-cd franka_kinesthetic_teaching_GUI
-<<<<<<< HEAD
-chmod +x franka_teach_run_gui_v2.py
-./franka_teach_run_gui_v2.py
-```
-=======
-./run_gui.sh
->>>>>>> f0a2e88 (Add robust launcher (run_gui.sh); document launcher usage; small config notes)
+- ./run_gui.sh
 
 ## Usage
 - Click Start Teach (Record) to put the robot in gravity compensation mode.
