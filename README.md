@@ -25,6 +25,7 @@ git clone https://github.com/ulubilgeulusoy/franka_kinesthetic_teaching_GUI.git
 - Make sure that robot arm is online and joints unlocked
 - FCI mode is active
 - Open new terminal
+- cd ~/franka_kinesthetic_teaching_GUI
 - ./run_gui.sh
 
 ## Usage
