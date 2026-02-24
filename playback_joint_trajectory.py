@@ -12,6 +12,8 @@ JOINT_NAMES = [
 ]
 TOLERANCE = 0.05  # rad
 TIMEOUT_SEC = 15  # Optional: how long to wait for start position before abort
+SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
+MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 
 class SmartTrajectoryPlayer(Node):
     def __init__(self, csv_file):
@@ -35,10 +37,8 @@ class SmartTrajectoryPlayer(Node):
             reader = csv.reader(csvfile)
             next(reader)  # Skip header
             raw_points = []
-            self.get_logger().info("exec, raw_points")
             t0 = None
             for row in reader:
-                self.get_logger().info("exec, in for")
                 t_ns = int(row[0])
                 if t0 is None:
                     t0 = t_ns
@@ -46,18 +46,58 @@ class SmartTrajectoryPlayer(Node):
                 positions = [float(j) for j in row[1:8]]
                 raw_points.append((dt, positions))
 
+        filtered_points = self.smooth_and_downsample_points(raw_points)
+
         traj = JointTrajectory()
         traj.joint_names = JOINT_NAMES
 
-        for dt, positions in raw_points:
+        for idx, (dt, positions) in enumerate(filtered_points):
             point = JointTrajectoryPoint()
             point.positions = positions
-            point.velocities = [0.0] * len(positions)
+            if idx == 0:
+                point.velocities = [0.0] * len(positions)
+            else:
+                prev_dt, prev_pos = filtered_points[idx - 1]
+                seg_dt = max(dt - prev_dt, 1e-3)
+                point.velocities = [(p - pp) / seg_dt for p, pp in zip(positions, prev_pos)]
             point.time_from_start.sec = int(dt)
             point.time_from_start.nanosec = int((dt % 1) * 1e9)
             traj.points.append(point)
 
+        self.get_logger().info(
+            f"Loaded {len(raw_points)} points, publishing {len(filtered_points)} smoothed points"
+        )
         return traj
+
+    def smooth_and_downsample_points(self, raw_points):
+        if len(raw_points) <= 2:
+            return raw_points
+
+        window = SMOOTHING_WINDOW if SMOOTHING_WINDOW % 2 == 1 else SMOOTHING_WINDOW + 1
+        half_window = window // 2
+
+        smoothed = []
+        for idx, (dt, _) in enumerate(raw_points):
+            start = max(0, idx - half_window)
+            end = min(len(raw_points), idx + half_window + 1)
+            span = raw_points[start:end]
+
+            avg_positions = []
+            for joint_idx in range(len(JOINT_NAMES)):
+                avg_positions.append(sum(p[1][joint_idx] for p in span) / len(span))
+            smoothed.append((dt, avg_positions))
+
+        filtered = [smoothed[0]]
+        last_dt = smoothed[0][0]
+        for dt, positions in smoothed[1:]:
+            if dt - last_dt >= MIN_POINT_DT:
+                filtered.append((dt, positions))
+                last_dt = dt
+
+        if filtered[-1][0] != smoothed[-1][0]:
+            filtered.append(smoothed[-1])
+
+        return filtered
 
     def joint_state_callback(self, msg):
         joint_map = dict(zip(msg.name, msg.position))
@@ -80,14 +120,10 @@ class SmartTrajectoryPlayer(Node):
             self.send_start_position()
             self.start_sent = True
             return
-        self.get_logger().info(f"Current joint positions: {self.actual_positions}")
-        self.get_logger().info(f"Target start position: {self.start_position}")
         if not self.full_sent and self.actual_positions is not None:
             if self.is_at_start_position():
                 self.get_logger().info("Reached start position, sending full trajectory")
-                #self.get_logger().info(self.trajectory)
                 self.publisher_.publish(self.trajectory)
-                self.get_logger().info("exec, self.trajectory")
                 self.full_sent = True
                 self.timer.cancel()
             else:
