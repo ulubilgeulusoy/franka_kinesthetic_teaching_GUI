@@ -523,10 +523,6 @@ class FR3TeachRunGUI(tk.Tk):
             return
 
         self._append_log(f"Selected CSV: {csv_path}")
-        self._append_log("Ensuring gripper node is running before playback...")
-        if self.ensure_gripper_ready() is None:
-            self.status_var.set("Gripper action server not available.")
-            return
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
             f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE}"
@@ -534,6 +530,14 @@ class FR3TeachRunGUI(tk.Tk):
 
         def delayed_start():
             time.sleep(3.0)
+            self.line_queue.put("Ensuring gripper action server is ready after MoveIt startup...")
+            if self.ensure_gripper_ready() is None:
+                self.line_queue.put("Playback aborted because no gripper action server became available.")
+                self.status_var.set("Gripper action server not available.")
+                self.running = False
+                self.btn_run.configure(text="Run Trajectory")
+                self._refresh_controls()
+                return
             self.line_queue.put("Starting trajectory playback…")
             self.run_pg.start(bash_cmd(
                 f"python3 playback_joint_trajectory.py '{csv_path}'"
