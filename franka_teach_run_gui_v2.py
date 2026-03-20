@@ -45,6 +45,7 @@ TEACH_NAMESPACE = "NS_1"
 GRIPPER_OPEN_WIDTH = 0.08
 GRIPPER_CLOSE_WIDTH = 0.0
 GRIPPER_SPEED = 0.1
+GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # -------------------------------------------
 
@@ -409,7 +410,37 @@ class FR3TeachRunGUI(tk.Tk):
     def ensure_gripper_node_running(self):
         if not self.gripper_node_pg.is_alive():
             self.launch_gripper_node()
-            time.sleep(2.0)
+
+    def wait_for_gripper_action_server(self, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
+        self.ensure_ros_client_ready()
+        node = rclpy.create_node(f"gripper_wait_client_{int(time.time() * 1000)}")
+        client = None
+        deadline = time.time() + timeout_sec
+        try:
+            while time.time() < deadline:
+                for candidate in self.get_gripper_action_candidates():
+                    trial_client = ActionClient(node, Move, candidate)
+                    if trial_client.wait_for_server(timeout_sec=0.5):
+                        return candidate
+                    trial_client.destroy()
+                time.sleep(0.1)
+        finally:
+            if client is not None:
+                client.destroy()
+            node.destroy_node()
+        return None
+
+    def ensure_gripper_ready(self, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
+        self.ensure_gripper_node_running()
+        action_name = self.wait_for_gripper_action_server(timeout_sec=timeout_sec)
+        if action_name is None:
+            self._append_log(
+                "No gripper move action server found after waiting. Expected one of: "
+                + ", ".join(self.get_gripper_action_candidates())
+            )
+            return None
+        self._append_log(f"Gripper action server ready: {action_name}")
+        return action_name
 
     def get_gripper_action_candidates(self):
         return [
@@ -423,24 +454,18 @@ class FR3TeachRunGUI(tk.Tk):
         self._append_log(f"Sending gripper {label.lower()} command...")
 
         def worker():
-            self.ensure_gripper_node_running()
-            self.ensure_ros_client_ready()
+            action_name = self.ensure_gripper_ready()
+            if action_name is None:
+                return
 
+            self.ensure_ros_client_ready()
             node = rclpy.create_node(f"gripper_gui_client_{int(time.time() * 1000)}")
             client = None
             try:
-                for candidate in self.get_gripper_action_candidates():
-                    trial_client = ActionClient(node, Move, candidate)
-                    if trial_client.wait_for_server(timeout_sec=1.0):
-                        client = trial_client
-                        action_name = candidate
-                        break
-                    trial_client.destroy()
-
-                if client is None:
+                client = ActionClient(node, Move, action_name)
+                if not client.wait_for_server(timeout_sec=1.0):
                     self.line_queue.put(
-                        "No gripper move action server found. Expected one of: "
-                        + ", ".join(self.get_gripper_action_candidates())
+                        f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
                     )
                     return
 
@@ -499,7 +524,9 @@ class FR3TeachRunGUI(tk.Tk):
 
         self._append_log(f"Selected CSV: {csv_path}")
         self._append_log("Ensuring gripper node is running before playback...")
-        self.ensure_gripper_node_running()
+        if self.ensure_gripper_ready() is None:
+            self.status_var.set("Gripper action server not available.")
+            return
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
             f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE}"
