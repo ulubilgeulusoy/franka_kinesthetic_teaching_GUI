@@ -55,7 +55,7 @@ class SmartTrajectoryPlayer(Node):
             self.create_publisher(JointTrajectory, topic, 10)
             for topic in TRAJECTORY_TOPICS
         ]
-        self.subscriptions = [
+        self.joint_state_subscriptions = [
             self.create_subscription(JointState, topic, self.joint_state_callback, 10)
             for topic in JOINT_STATES_TOPICS
         ]
