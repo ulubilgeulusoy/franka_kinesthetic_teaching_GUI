@@ -498,6 +498,8 @@ class FR3TeachRunGUI(tk.Tk):
             return
 
         self._append_log(f"Selected CSV: {csv_path}")
+        self._append_log("Ensuring gripper node is running before playback...")
+        self.ensure_gripper_node_running()
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
             f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE}"

@@ -1,7 +1,5 @@
 import csv
-import os
 import shlex
-import signal
 import subprocess
 import sys
 import threading
@@ -69,8 +67,6 @@ class SmartTrajectoryPlayer(Node):
         if not self.recorded_points:
             raise RuntimeError(f"No trajectory points loaded from {csv_file}")
         self.start_position = self.recorded_points[0][1]
-        self.gripper_launch_process = None
-        self._gripper_launch_lock = threading.Lock()
 
         self.timer = self.create_timer(0.5, self.update)
 
@@ -274,45 +270,17 @@ class SmartTrajectoryPlayer(Node):
         self.get_logger().info(f"Executing recorded gripper event '{event_name}' via {action_name}")
         subprocess.Popen(["bash", "-lc", cmd])
 
-    def launch_gripper_node(self):
-        with self._gripper_launch_lock:
-            if self.gripper_launch_process is not None and self.gripper_launch_process.poll() is None:
-                return
-
-            cmd = (
-                f"{ROS_SETUP}; "
-                f"ros2 launch franka_gripper gripper.launch.py robot_ip:={ROBOT_IP} "
-                f"namespace:={TEACH_NAMESPACE} arm_id:=fr3"
-            )
-            self.get_logger().info("Starting gripper node for playback...")
-            self.gripper_launch_process = subprocess.Popen(
-                ["bash", "-lc", cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid,
-                text=True,
-            )
-
     def ensure_gripper_ready(self):
         deadline = time.monotonic() + GRIPPER_ACTION_WAIT_TIMEOUT_SEC
-        attempted_launch = False
         while time.monotonic() < deadline:
             action_name = self.find_gripper_action()
             if action_name is not None:
                 return action_name
-
-            launch_dead = self.gripper_launch_process is None or self.gripper_launch_process.poll() is not None
-            if launch_dead and not attempted_launch:
-                self.launch_gripper_node()
-                attempted_launch = True
-            elif launch_dead and attempted_launch:
-                self.launch_gripper_node()
-
             time.sleep(0.25)
 
         raise RuntimeError(
-            "No gripper move action server found for playback. "
-            f"Expected one of: {', '.join(GRIPPER_ACTION_CANDIDATES)}"
+            "No gripper move action server found for playback. Expected an already-running server on one of: "
+            f"{', '.join(GRIPPER_ACTION_CANDIDATES)}"
         )
 
     def find_gripper_action(self):
@@ -352,11 +320,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node.gripper_launch_process is not None and node.gripper_launch_process.poll() is None:
-            try:
-                os.killpg(os.getpgid(node.gripper_launch_process.pid), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
         node.destroy_node()
         rclpy.shutdown()
         print("Shutdown")
