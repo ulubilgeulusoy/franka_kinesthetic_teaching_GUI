@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import csv
 import os
 import shlex
 import signal
@@ -87,6 +88,9 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = False
         self.running = False
         self.gravity_mode = False
+        self.current_recording_filename = None
+        self.teach_start_time_ns = None
+        self.recorded_gripper_events = []
 
         self._build_ui()
         self._refresh_controls()
@@ -267,12 +271,18 @@ class FR3TeachRunGUI(tk.Tk):
         if custom_name:
             if not custom_name.endswith(".csv"):
                 custom_name += ".csv"
+            recording_filename = custom_name
             recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(custom_name)}"
             self._append_log(f"Starting joint recorder... output file: {custom_name}")
         else:
-            recorder_cmd = "python3 record_joint_trajectory.py"
-            self._append_log("Starting joint recorder... (stop to save CSV)")
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            recording_filename = f"joint_trajectory_{timestamp}.csv"
+            recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(recording_filename)}"
+            self._append_log(f"Starting joint recorder... output file: {recording_filename}")
 
+        self.current_recording_filename = recording_filename
+        self.teach_start_time_ns = time.time_ns()
+        self.recorded_gripper_events = []
         self.teach_pg.start(bash_cmd(recorder_cmd))
 
         self.teaching = True
@@ -287,13 +297,39 @@ class FR3TeachRunGUI(tk.Tk):
         self.teach_pg.terminate_all(sig=signal.SIGTERM)
         self.teach_pg.clear_finished()
 
+        self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
+        self.teach_start_time_ns = None
+        self.current_recording_filename = None
+        self.recorded_gripper_events = []
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.status_var.set("Teach stopped. Check CSV in current directory.")
         self._refresh_controls()
 
+
+    def record_gripper_event(self, event_name: str):
+        if not self.teaching or self.teach_start_time_ns is None:
+            return
+        timestamp_ns = max(0, time.time_ns() - self.teach_start_time_ns)
+        self.recorded_gripper_events.append((timestamp_ns, event_name))
+
+    def append_gripper_events_to_csv(self):
+        if not self.current_recording_filename or not self.recorded_gripper_events:
+            return
+        if not os.path.exists(self.current_recording_filename):
+            self._append_log(
+                f"Recording file not found for gripper event append: {self.current_recording_filename}"
+            )
+            return
+        with open(self.current_recording_filename, 'a', newline='') as f:
+            writer = csv.writer(f)
+            for timestamp_ns, event_name in self.recorded_gripper_events:
+                writer.writerow([timestamp_ns, 'gripper', event_name, '', '', '', '', '', '', ''])
+        self._append_log(
+            f"Appended {len(self.recorded_gripper_events)} gripper event(s) to {self.current_recording_filename}"
+        )
 
     def launch_gripper_node(self):
         self._append_log("Starting gripper node...")
@@ -353,9 +389,11 @@ class FR3TeachRunGUI(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def open_gripper(self):
+        self.record_gripper_event("open")
         self.send_gripper_command(GRIPPER_OPEN_WIDTH, "Open")
 
     def close_gripper(self):
+        self.record_gripper_event("close")
         self.send_gripper_command(GRIPPER_CLOSE_WIDTH, "Close")
 
     def on_run_clicked(self):
@@ -419,6 +457,9 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = False
         self.gravity_mode = False
         self.running = False
+        self.teach_start_time_ns = None
+        self.current_recording_filename = None
+        self.recorded_gripper_events = []
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_run.configure(text="Run Trajectory")

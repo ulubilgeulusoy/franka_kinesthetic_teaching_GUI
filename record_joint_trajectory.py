@@ -25,10 +25,15 @@ class JointRecorder(Node):
         if not self.joint_data:
             self.get_logger().error("No joint data recorded! Not saving CSV.")
             return
-        with open(filename, 'w') as f:
+        with open(filename, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['timestamp_ns'] + [f'joint_{i+1}' for i in range(len(self.joint_data[0]) - 1)])
-            writer.writerows(self.joint_data)
+            writer.writerow([
+                'timestamp_ns',
+                'row_type',
+                'event',
+            ] + [f'joint_{i+1}' for i in range(len(self.joint_data[0]) - 1)])
+            for row in self.joint_data:
+                writer.writerow([row[0], 'joint', ''] + row[1:])
         self.get_logger().info(f'Saved trajectory to {filename}')
 
 def build_output_filename():

@@ -1,5 +1,9 @@
 import csv
+import shlex
+import subprocess
 import sys
+import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -20,6 +24,15 @@ MAX_BLEND_TIME_SEC = 6.0
 BLEND_SPEED_RAD_PER_SEC = 0.35
 MIN_BLEND_STEPS = 10
 MIN_SEGMENT_DT = 1e-3
+GRIPPER_OPEN_WIDTH = 0.08
+GRIPPER_CLOSE_WIDTH = 0.0
+GRIPPER_SPEED = 0.1
+GRIPPER_ACTION_CANDIDATES = [
+    "/franka_gripper/move",
+    "/NS_1/franka_gripper/move",
+    "/fr3_gripper/move",
+    "/NS_1/fr3_gripper/move",
+]
 
 
 class SmartTrajectoryPlayer(Node):
@@ -36,33 +49,48 @@ class SmartTrajectoryPlayer(Node):
         self.actual_positions = None
         self.full_sent = False
         self.start_time_ns = self.get_clock().now().nanoseconds
+        self.execution_start_time = None
 
-        self.recorded_points = self.load_trajectory_points(csv_file)
+        self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
             raise RuntimeError(f"No trajectory points loaded from {csv_file}")
         self.start_position = self.recorded_points[0][1]
 
         self.timer = self.create_timer(0.5, self.update)
 
-    def load_trajectory_points(self, filename):
+    def load_recording(self, filename):
         with open(filename, newline="") as csvfile:
             reader = csv.reader(csvfile)
-            next(reader)
+            header = next(reader)
+            is_new_format = len(header) >= 10 and header[1] == "row_type"
             raw_points = []
+            gripper_events = []
             t0 = None
             for row in reader:
+                if not row:
+                    continue
                 t_ns = int(row[0])
                 if t0 is None:
                     t0 = t_ns
                 dt = (t_ns - t0) / 1e9
-                positions = [float(j) for j in row[1:8]]
-                raw_points.append((dt, positions))
+                if is_new_format:
+                    row_type = row[1]
+                    if row_type == "joint":
+                        positions = [float(j) for j in row[3:10]]
+                        raw_points.append((dt, positions))
+                    elif row_type == "gripper":
+                        gripper_events.append((dt, row[2].strip().lower()))
+                else:
+                    positions = [float(j) for j in row[1:8]]
+                    raw_points.append((dt, positions))
 
         filtered_points = self.smooth_and_downsample_points(raw_points)
         self.get_logger().info(
-            f"Loaded {len(raw_points)} points, publishing {len(filtered_points)} smoothed points"
+            f"Loaded {len(raw_points)} joint points, publishing {len(filtered_points)} smoothed points"
         )
-        return filtered_points
+        if gripper_events:
+            self.get_logger().info(f"Loaded {len(gripper_events)} gripper event(s)")
+        return filtered_points, gripper_events
 
     def smooth_and_downsample_points(self, raw_points):
         if len(raw_points) <= 2:
@@ -128,7 +156,10 @@ class SmartTrajectoryPlayer(Node):
             return
 
         self.get_logger().info("Publishing blended trajectory from current pose into recording")
-        self.publisher_.publish(self.build_execution_trajectory())
+        trajectory, time_offset = self.build_execution_trajectory()
+        self.publisher_.publish(trajectory)
+        self.execution_start_time = time.monotonic()
+        self.schedule_gripper_events(time_offset)
         self.full_sent = True
         self.timer.cancel()
 
@@ -189,7 +220,47 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
-        return traj
+        return traj, blend_time
+
+    def schedule_gripper_events(self, time_offset):
+        for event_time, event_name in self.gripper_events:
+            event_delay = time_offset + event_time
+            threading.Thread(
+                target=self.run_gripper_event_after_delay,
+                args=(event_delay, event_name),
+                daemon=True,
+            ).start()
+
+    def run_gripper_event_after_delay(self, delay_sec, event_name):
+        time.sleep(max(0.0, delay_sec))
+        width = GRIPPER_OPEN_WIDTH if event_name == "open" else GRIPPER_CLOSE_WIDTH
+        action_name = self.find_gripper_action()
+        if action_name is None:
+            self.get_logger().error(
+                "No gripper move action server found for playback. "
+                f"Expected one of: {', '.join(GRIPPER_ACTION_CANDIDATES)}"
+            )
+            return
+        goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
+        cmd = (
+            f"source ~/franka_ws/install/setup.bash; "
+            f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
+        )
+        self.get_logger().info(f"Executing recorded gripper event '{event_name}' via {action_name}")
+        subprocess.Popen(["bash", "-lc", cmd])
+
+    def find_gripper_action(self):
+        result = subprocess.run(
+            ["bash", "-lc", "source ~/franka_ws/install/setup.bash; ros2 action list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        action_names = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        for candidate in GRIPPER_ACTION_CANDIDATES:
+            if candidate in action_names:
+                return candidate
+        return None
 
     def compute_blend_time(self, max_error):
         if max_error <= TOLERANCE:
