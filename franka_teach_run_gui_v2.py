@@ -12,6 +12,10 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 # --------- CONFIG (edit if needed) ---------
 ROS_SETUP = "source ~/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"  # change if needed
+TEACH_NAMESPACE = "NS_1"
+GRIPPER_OPEN_WIDTH = 0.08
+GRIPPER_CLOSE_WIDTH = 0.0
+GRIPPER_SPEED = 0.1
 # -------------------------------------------
 
 def bash_cmd(cmd: str):
@@ -71,53 +75,85 @@ class FR3TeachRunGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("FR3 Teach & Run (thread-safe)")
-        self.geometry("900x600")
+        self.geometry("900x720")
+        self.minsize(900, 720)
 
         self.line_queue = queue.Queue()
         self.teach_pg = ProcessGroup(self.line_queue)
         self.run_pg = ProcessGroup(self.line_queue)
+        self.gripper_node_pg = ProcessGroup(self.line_queue)
+        self.gripper_pg = ProcessGroup(self.line_queue)
 
         self.teaching = False
         self.running = False
         self.gravity_mode = False
 
         self._build_ui()
+        self._refresh_controls()
         self.after(50, self._poll_queue)
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=10)
         root.pack(fill="both", expand=True)
 
-        ctl = ttk.Frame(root)
-        ctl.pack(fill="x", pady=(0, 8))
+        controls = ttk.Frame(root)
+        controls.pack(fill="x", pady=(0, 8))
 
-        self.btn_gravity = ttk.Button(ctl, text="Start Gravity Mode", command=self.on_gravity_toggle)
-        self.btn_gravity.pack(side="left", padx=(0, 8))
+        top_row = ttk.Frame(controls)
+        top_row.pack(fill="x", pady=(0, 6))
 
-        self.btn_teach = ttk.Button(ctl, text="Start Teach (Record)", command=self.on_teach_toggle)
+        left_top = ttk.Frame(top_row)
+        left_top.pack(side="left")
+
+        self.btn_teach = ttk.Button(left_top, text="Start Teach (Record)", command=self.on_teach_toggle)
         self.btn_teach.pack(side="left", padx=(0, 8))
 
-        self.btn_run = ttk.Button(ctl, text="Run Trajectory", command=self.on_run_clicked)
-        self.btn_run.pack(side="left", padx=(0, 8))
+        self.btn_run = ttk.Button(left_top, text="Run Trajectory", command=self.on_run_clicked)
+        self.btn_run.pack(side="left")
 
-        self.btn_stop_all = ttk.Button(ctl, text="Stop All", command=self.stop_all)
-        self.btn_stop_all.pack(side="left", padx=(0, 8))
+        self.btn_kill = tk.Button(
+            top_row,
+            text="Kill",
+            command=self.kill_all,
+            bg="#c62828",
+            fg="white",
+            activebackground="#b71c1c",
+            activeforeground="white",
+            relief="raised",
+            padx=16,
+        )
+        self.btn_kill.pack(side="right")
 
-        self.btn_open_dir = ttk.Button(ctl, text="Open CSV Dir…", command=self.open_csv_dir)
-        self.btn_open_dir.pack(side="left", padx=(0, 8))
+        second_row = ttk.Frame(controls)
+        second_row.pack(fill="x")
+
+        self.btn_gravity = ttk.Button(second_row, text="Start Gravity Mode", command=self.on_gravity_toggle)
+        self.btn_gravity.pack(side="left", padx=(0, 8))
+
+        self.btn_gripper_open = ttk.Button(second_row, text="Open Gripper", command=self.open_gripper)
+        self.btn_gripper_open.pack(side="left", padx=(0, 8))
+
+        self.btn_gripper_close = ttk.Button(second_row, text="Close Gripper", command=self.close_gripper)
+        self.btn_gripper_close.pack(side="left")
 
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(root, textvariable=self.status_var).pack(fill="x", pady=(0, 8))
 
-        self.log = tk.Text(root, height=28)
+        self.log = tk.Text(root, height=22)
         self.log.pack(fill="both", expand=True)
         self.log.configure(state="disabled")
 
-        note = ttk.Label(root, text=(
+        footer = ttk.Frame(root)
+        footer.pack(fill="x", pady=(8, 0))
+
+        note = ttk.Label(footer, text=(
             "Make sure topics in your record/playback scripts match your system. "
             "Edit ROS_SETUP/ROBOT_IP in this file if needed."
         ))
-        note.pack(fill="x", pady=(8, 0))
+        note.pack(side="left", fill="x", expand=True)
+
+        self.btn_open_dir = ttk.Button(footer, text="Open CSV Dir…", command=self.open_csv_dir)
+        self.btn_open_dir.pack(side="right")
 
     def _append_log(self, line: str):
         self.log.configure(state="normal")
@@ -133,6 +169,35 @@ class FR3TeachRunGUI(tk.Tk):
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)
+
+    def _refresh_controls(self):
+        if self.teaching:
+            self.btn_teach.configure(state="normal")
+            self.btn_run.configure(state="disabled")
+            self.btn_gravity.configure(state="disabled")
+            self.btn_open_dir.configure(state="disabled")
+        else:
+            run_enabled = "disabled" if self.running else "normal"
+            gravity_enabled = "disabled" if self.running else "normal"
+            teach_enabled = "disabled" if self.running else "normal"
+            open_dir_enabled = "disabled" if self.running else "normal"
+            self.btn_teach.configure(state=teach_enabled)
+            self.btn_run.configure(state=run_enabled)
+            self.btn_gravity.configure(state=gravity_enabled)
+            self.btn_open_dir.configure(state=open_dir_enabled)
+
+        self.btn_gripper_open.configure(state="normal")
+        self.btn_gripper_close.configure(state="normal")
+
+        any_active = (
+            self.teaching
+            or self.running
+            or self.gravity_mode
+            or self.teach_pg.is_alive()
+            or self.run_pg.is_alive()
+            or self.gripper_node_pg.is_alive()
+        )
+        self.btn_kill.configure(state="normal" if any_active else "disabled")
 
     # Actions
     def on_gravity_toggle(self):
@@ -154,8 +219,10 @@ class FR3TeachRunGUI(tk.Tk):
             "ros2 launch franka_bringup example.launch.py "
             "controller_name:=gravity_compensation_example_controller"
         ))
+        self.ensure_gripper_node_running()
         self.gravity_mode = True
         self.btn_gravity.configure(text="Stop Gravity Mode")
+        self._refresh_controls()
 
     def start_gravity_mode(self):
         if self.teach_pg.is_alive():
@@ -166,6 +233,7 @@ class FR3TeachRunGUI(tk.Tk):
             return
         self.launch_gravity_controller()
         self.status_var.set("Gravity compensation active.")
+        self._refresh_controls()
 
     def stop_gravity_mode(self):
         self._append_log("Stopping gravity compensation...")
@@ -178,6 +246,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
         self.status_var.set("Gravity compensation stopped.")
+        self._refresh_controls()
 
     def start_teach(self):
         custom_name = simpledialog.askstring(
@@ -209,6 +278,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = True
         self.btn_teach.configure(text="Stop Teach (Save)")
         self.status_var.set("Recording… Move arm by hand to teach.")
+        self._refresh_controls()
 
     def stop_teach(self):
         self._append_log("Stopping teach (sending SIGINT)…")
@@ -222,6 +292,71 @@ class FR3TeachRunGUI(tk.Tk):
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.status_var.set("Teach stopped. Check CSV in current directory.")
+        self._refresh_controls()
+
+
+    def launch_gripper_node(self):
+        self._append_log("Starting gripper node...")
+        self.gripper_node_pg.start(bash_cmd(
+            f"ros2 launch franka_gripper gripper.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE} arm_id:=fr3"
+        ))
+
+    def ensure_gripper_node_running(self):
+        if not self.gripper_node_pg.is_alive():
+            self.launch_gripper_node()
+            time.sleep(2.0)
+
+    def get_gripper_action_candidates(self):
+        return [
+            "/franka_gripper/move",
+            f"/{TEACH_NAMESPACE}/franka_gripper/move",
+            "/fr3_gripper/move",
+            f"/{TEACH_NAMESPACE}/fr3_gripper/move",
+        ]
+
+    def send_gripper_command(self, width: float, label: str):
+        self._append_log(f"Sending gripper {label.lower()} command...")
+
+        def worker():
+            self.ensure_gripper_node_running()
+
+            action_list_proc = subprocess.run(
+                bash_cmd("ros2 action list"),
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            action_names = {
+                line.strip() for line in action_list_proc.stdout.splitlines() if line.strip()
+            }
+
+            action_name = next(
+                (candidate for candidate in self.get_gripper_action_candidates() if candidate in action_names),
+                None,
+            )
+            if action_name is None:
+                self.line_queue.put(
+                    "No gripper move action server found. Expected one of: "
+                    + ", ".join(self.get_gripper_action_candidates())
+                )
+                return
+
+            self.line_queue.put(f"Sending {label} command to {action_name}")
+            goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
+            self.gripper_pg.start(
+                bash_cmd(
+                    f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_gripper(self):
+        self.send_gripper_command(GRIPPER_OPEN_WIDTH, "Open")
+
+    def close_gripper(self):
+        self.send_gripper_command(GRIPPER_CLOSE_WIDTH, "Close")
 
     def on_run_clicked(self):
         csv_path = filedialog.askopenfilename(
@@ -254,6 +389,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.running = True
         self.status_var.set("Running trajectory…")
         self.btn_run.configure(text="Running…")
+        self._refresh_controls()
         threading.Thread(target=self._watch_run_finish, daemon=True).start()
 
     def _watch_run_finish(self):
@@ -263,23 +399,31 @@ class FR3TeachRunGUI(tk.Tk):
         # UI updates must be done in main thread; schedule via after
         self.after(0, lambda: self.btn_run.configure(text="Run Trajectory"))
         self.after(0, lambda: self.status_var.set("Run finished."))
+        self.after(0, self._refresh_controls)
 
-    def stop_all(self):
-        self._append_log("Stopping all processes…")
-        self.teach_pg.terminate_all(sig=signal.SIGINT)
-        self.run_pg.terminate_all(sig=signal.SIGINT)
-        time.sleep(0.5)
+    def kill_all(self):
+        self._append_log("Killing active processes…")
         self.teach_pg.terminate_all(sig=signal.SIGTERM)
         self.run_pg.terminate_all(sig=signal.SIGTERM)
+        self.gripper_node_pg.terminate_all(sig=signal.SIGTERM)
+        self.gripper_pg.terminate_all(sig=signal.SIGTERM)
+        time.sleep(0.3)
+        self.teach_pg.terminate_all(sig=signal.SIGKILL)
+        self.run_pg.terminate_all(sig=signal.SIGKILL)
+        self.gripper_node_pg.terminate_all(sig=signal.SIGKILL)
+        self.gripper_pg.terminate_all(sig=signal.SIGKILL)
         self.teach_pg.clear_finished()
         self.run_pg.clear_finished()
+        self.gripper_node_pg.clear_finished()
+        self.gripper_pg.clear_finished()
         self.teaching = False
         self.gravity_mode = False
         self.running = False
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_run.configure(text="Run Trajectory")
-        self.status_var.set("All processes signaled to stop.")
+        self.status_var.set("Active processes killed.")
+        self._refresh_controls()
 
     def open_csv_dir(self):
         cwd = os.getcwd()
