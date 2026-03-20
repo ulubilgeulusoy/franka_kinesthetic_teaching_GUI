@@ -1,0 +1,60 @@
+[move_group-3] You can start planning now!
+[move_group-3] 
+[joint_state_publisher-5] [INFO] [1774039012.660526261] [joint_state_publisher]: Waiting for robot_description to be published on the robot_description topic...
+[ros2_control_node-4] [INFO] [1774039012.718948338] [controller_manager]: Loading controller 'franka_robot_state_broadcaster'
+[spawner-6] [INFO] [1774039012.805139445] [spawner_franka_robot_state_broadcaster]: [94mLoaded [1mfranka_robot_state_broadcaster[0m
+[ros2_control_node-4] [INFO] [1774039012.810695176] [controller_manager]: Configuring controller 'franka_robot_state_broadcaster'
+[spawner-6] [INFO] [1774039012.879209544] [spawner_franka_robot_state_broadcaster]: [92mConfigured and activated [1mfranka_robot_state_broadcaster[0m
+[ros2-8] [INFO] [1774039012.903359395] [spawner_fr3_arm_controller]: waiting for service /controller_manager/list_controllers to become available...
+[ros2-9] [INFO] [1774039012.947603522] [spawner_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[INFO] [spawner-6]: process has finished cleanly [pid 199168]
+[ros2_control_node-4] [INFO] [1774039013.156793660] [controller_manager]: Loading controller 'fr3_arm_controller'
+[franka_gripper_node-1] [ERROR] [1774039013.156897573] [NS_1.franka_gripper]: libfranka: UDP receive: Timeout
+[ros2_control_node-4] [WARN] [1774039013.168920260] [fr3_arm_controller]: [Deprecated]: "allow_nonzero_velocity_at_trajectory_end" is set to true. The default behavior will change to false.
+[ros2-8] [INFO] [1774039013.170542920] [spawner_fr3_arm_controller]: [94mLoaded [1mfr3_arm_controller[0m
+[ros2_control_node-4] [INFO] [1774039013.171714383] [controller_manager]: Configuring controller 'fr3_arm_controller'
+[ros2_control_node-4] [INFO] [1774039013.171867936] [fr3_arm_controller]: No specific joint names are used for command interfaces. Using 'joints' parameter.
+[ros2_control_node-4] [WARN] [1774039013.171900439] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172010804] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172077548] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172155722] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172218109] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172282733] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [WARN] [1774039013.172350210] [fr3_arm_controller]: 'ff_velocity_scale' parameters is not defined under 'gains.<joint_name>.' structure. Maybe you are using deprecated format 'ff_velocity_scale/<joint_name>'!
+[ros2_control_node-4] [INFO] [1774039013.172429658] [fr3_arm_controller]: Command interfaces are [effort] and state interfaces are [position velocity].
+[ros2_control_node-4] [INFO] [1774039013.172462768] [fr3_arm_controller]: Using 'splines' interpolation method.
+[ros2_control_node-4] [INFO] [1774039013.173498964] [fr3_arm_controller]: Controller state will be published at 50.00 Hz.
+[ros2_control_node-4] [INFO] [1774039013.175813486] [fr3_arm_controller]: Action status changes will be monitored at 20.00 Hz.
+[ros2-8] [INFO] [1774039013.187033704] [spawner_fr3_arm_controller]: [92mConfigured and activated [1mfr3_arm_controller[0m
+[ros2_control_node-4] [INFO] [1774039013.201378253] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[ros2-9] [INFO] [1774039013.211929464] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[ros2_control_node-4] [INFO] [1774039013.213568516] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[ros2_control_node-4] [INFO] [1774039013.213658284] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[ros2-9] [INFO] [1774039013.220232222] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [ros2-8]: process has finished cleanly [pid 199172]
+[INFO] [ros2-9]: process has finished cleanly [pid 199174]
+Starting trajectory playback…
+[franka_gripper_node-1] terminate called after throwing an instance of 'Poco::Net::NetException'
+[franka_gripper_node-1]   what():  Net Exception
+[ERROR] [franka_gripper_node-1]: process has died [pid 198954, exit code -6, cmd '/home/parc/franka_ws/install/franka_gripper/lib/franka_gripper/franka_gripper_node --ros-args -r __node:=franka_gripper -r __ns:=/NS_1 --params-file /tmp/launch_params_pgff47ix --params-file /home/parc/franka_ws/install/franka_gripper/share/franka_gripper/config/franka_gripper_node.yaml'].
+[rviz2-1] [INFO] [1774039014.305644782] [rviz2]: Stereo is NOT SUPPORTED
+[rviz2-1] [INFO] [1774039014.305802055] [rviz2]: OpenGl version: 4.5 (GLSL 4.5)
+[exit 198919] code=0
+[rviz2-1] [INFO] [1774039014.451765979] [rviz2]: Stereo is NOT SUPPORTED
+[rviz2-1] Warning: class_loader.impl: SEVERE WARNING!!! A namespace collision has occurred with plugin factory for class rviz_default_plugins::displays::InteractiveMarkerDisplay. New factory will OVERWRITE existing one. This situation occurs when libraries containing plugins are directly linked against an executable (the one running right now generating this message). Please separate plugins out into their own library or just don't link against the library and use either class_loader::ClassLoader/MultiLibraryClassLoader to open.
+[rviz2-1]          at line 253 in /opt/ros/humble/include/class_loader/class_loader/class_loader_core.hpp
+[rviz2-1] [INFO] [1774039014.595791502] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.0274263 seconds
+[rviz2-1] [INFO] [1774039014.595857489] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+[INFO] [1774039014.868873591] [smart_trajectory_player]: Loaded 253 joint points, publishing 248 smoothed points
+[INFO] [1774039014.869320559] [smart_trajectory_player]: Loaded 2 gripper event(s)
+[INFO] [1774039015.370122698] [smart_trajectory_player]: Waiting for current joint state...
+[INFO] [1774039015.870017401] [smart_trajectory_player]: Waiting for current joint state...
+[INFO] [1774039016.369903113] [smart_trajectory_player]: Publishing blended trajectory from current pose into recording
+[INFO] [1774039016.370199089] [smart_trajectory_player]: Current pose already near trajectory start; skipping blend-in move
+[rviz2-1] [ERROR] [1774039018.172272581] [moveit_ros_visualization.motion_planning_frame]: Action server: /recognize_objects not available
+[rviz2-1] [INFO] [1774039018.414181982] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.00152724 seconds
+[rviz2-1] [INFO] [1774039018.414218870] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+[rviz2-1] [INFO] [1774039019.340721697] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
+[rviz2-1] [INFO] [1774039019.341803838] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/monitored_planning_scene'
+[ERROR] [1774039019.759692850] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[ERROR] [1774039023.135465185] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
