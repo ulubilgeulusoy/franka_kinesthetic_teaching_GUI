@@ -37,7 +37,7 @@ load_ros_environment(ROS_SETUP)
 
 import rclpy
 from rclpy.action import ActionClient
-from franka_msgs.action import Move
+from franka_msgs.action import Grasp, Move
 
 # --------- CONFIG (edit if needed) ---------
 ROBOT_IP = "172.16.0.2"  # change if needed
@@ -45,6 +45,9 @@ TEACH_NAMESPACE = "NS_1"
 GRIPPER_OPEN_WIDTH = 0.08
 GRIPPER_CLOSE_WIDTH = 0.0
 GRIPPER_SPEED = 0.1
+GRIPPER_GRASP_FORCE = 40.0
+GRIPPER_EPSILON_INNER = 0.005
+GRIPPER_EPSILON_OUTER = 0.08
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # -------------------------------------------
@@ -340,6 +343,10 @@ class FR3TeachRunGUI(tk.Tk):
             time.sleep(0.5)
 
         self.teach_pg.clear_finished()
+        self.gripper_node_pg.terminate_all(sig=signal.SIGTERM)
+        time.sleep(0.2)
+        self.gripper_node_pg.terminate_all(sig=signal.SIGKILL)
+        self.gripper_node_pg.clear_finished()
         self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
@@ -411,38 +418,36 @@ class FR3TeachRunGUI(tk.Tk):
         if not self.gripper_node_pg.is_alive():
             self.launch_gripper_node()
 
-    def wait_for_gripper_action_server(self, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
+    def wait_for_gripper_action_server(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
         self.ensure_ros_client_ready()
         node = rclpy.create_node(f"gripper_wait_client_{int(time.time() * 1000)}")
-        client = None
         deadline = time.time() + timeout_sec
         try:
             while time.time() < deadline:
-                for candidate in self.get_gripper_action_candidates():
-                    trial_client = ActionClient(node, Move, candidate)
+                for candidate in candidates:
+                    trial_client = ActionClient(node, action_type, candidate)
                     if trial_client.wait_for_server(timeout_sec=0.5):
+                        trial_client.destroy()
                         return candidate
                     trial_client.destroy()
                 time.sleep(0.1)
         finally:
-            if client is not None:
-                client.destroy()
             node.destroy_node()
         return None
 
-    def ensure_gripper_ready(self, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
+    def ensure_gripper_ready(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
         self.ensure_gripper_node_running()
-        action_name = self.wait_for_gripper_action_server(timeout_sec=timeout_sec)
+        action_name = self.wait_for_gripper_action_server(action_type, candidates, timeout_sec=timeout_sec)
         if action_name is None:
             self._append_log(
-                "No gripper move action server found after waiting. Expected one of: "
-                + ", ".join(self.get_gripper_action_candidates())
+                "No gripper action server found after waiting. Expected one of: "
+                + ", ".join(candidates)
             )
             return None
         self._append_log(f"Gripper action server ready: {action_name}")
         return action_name
 
-    def get_gripper_action_candidates(self):
+    def get_gripper_move_action_candidates(self):
         return [
             "/franka_gripper/move",
             f"/{TEACH_NAMESPACE}/franka_gripper/move",
@@ -450,11 +455,20 @@ class FR3TeachRunGUI(tk.Tk):
             f"/{TEACH_NAMESPACE}/fr3_gripper/move",
         ]
 
-    def send_gripper_command(self, width: float, label: str):
+    def get_gripper_grasp_action_candidates(self):
+        return [
+            "/franka_gripper/grasp",
+            f"/{TEACH_NAMESPACE}/franka_gripper/grasp",
+            "/fr3_gripper/grasp",
+            f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
+        ]
+
+    def send_gripper_move_command(self, width: float, label: str):
         self._append_log(f"Sending gripper {label.lower()} command...")
 
         def worker():
-            action_name = self.ensure_gripper_ready()
+            candidates = self.get_gripper_move_action_candidates()
+            action_name = self.ensure_gripper_ready(Move, candidates)
             if action_name is None:
                 return
 
@@ -500,13 +514,67 @@ class FR3TeachRunGUI(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def send_gripper_close_command(self, width: float, label: str):
+        self._append_log(f"Sending gripper {label.lower()} command...")
+
+        def worker():
+            candidates = self.get_gripper_grasp_action_candidates()
+            action_name = self.ensure_gripper_ready(Grasp, candidates)
+            if action_name is None:
+                return
+
+            self.ensure_ros_client_ready()
+            node = rclpy.create_node(f"gripper_grasp_client_{int(time.time() * 1000)}")
+            client = None
+            try:
+                client = ActionClient(node, Grasp, action_name)
+                if not client.wait_for_server(timeout_sec=1.0):
+                    self.line_queue.put(
+                        f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
+                    )
+                    return
+
+                self.line_queue.put(f"Sending {label} command to {action_name}")
+                goal_msg = Grasp.Goal()
+                goal_msg.width = width
+                goal_msg.speed = GRIPPER_SPEED
+                goal_msg.force = GRIPPER_GRASP_FORCE
+                goal_msg.epsilon.inner = GRIPPER_EPSILON_INNER
+                goal_msg.epsilon.outer = GRIPPER_EPSILON_OUTER
+
+                goal_future = client.send_goal_async(goal_msg)
+                while rclpy.ok() and not goal_future.done():
+                    rclpy.spin_once(node, timeout_sec=0.1)
+
+                goal_handle = goal_future.result()
+                if goal_handle is None or not goal_handle.accepted:
+                    self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
+                    return
+
+                result_future = goal_handle.get_result_async()
+                while rclpy.ok() and not result_future.done():
+                    rclpy.spin_once(node, timeout_sec=0.1)
+
+                result = result_future.result()
+                if result is not None and result.status == 4:
+                    self.line_queue.put(f"Gripper {label.lower()} succeeded")
+                else:
+                    status = getattr(result, "status", "unknown")
+                    self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
+            finally:
+                if client is not None:
+                    client.destroy()
+                node.destroy_node()
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def open_gripper(self):
         self.record_gripper_event("open")
-        self.send_gripper_command(GRIPPER_OPEN_WIDTH, "Open")
+        self.send_gripper_move_command(GRIPPER_OPEN_WIDTH, "Open")
 
     def close_gripper(self):
         self.record_gripper_event("close")
-        self.send_gripper_command(GRIPPER_CLOSE_WIDTH, "Close")
+        self.send_gripper_close_command(GRIPPER_CLOSE_WIDTH, "Close")
 
     def on_run_clicked(self):
         csv_path = filedialog.askopenfilename(
@@ -531,13 +599,17 @@ class FR3TeachRunGUI(tk.Tk):
         def delayed_start():
             time.sleep(3.0)
             self.line_queue.put("Ensuring gripper action server is ready after MoveIt startup...")
-            if self.ensure_gripper_ready() is None:
+            action_name = self.wait_for_gripper_action_server(
+                Move, self.get_gripper_move_action_candidates()
+            )
+            if action_name is None:
                 self.line_queue.put("Playback aborted because no gripper action server became available.")
                 self.status_var.set("Gripper action server not available.")
                 self.running = False
                 self.btn_run.configure(text="Run Trajectory")
                 self._refresh_controls()
                 return
+            self.line_queue.put(f"Gripper action server ready: {action_name}")
             self.line_queue.put("Starting trajectory playback…")
             self.run_pg.start(bash_cmd(
                 f"python3 playback_joint_trajectory.py '{csv_path}'"

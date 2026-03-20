@@ -27,6 +27,9 @@ MIN_SEGMENT_DT = 1e-3
 GRIPPER_OPEN_WIDTH = 0.08
 GRIPPER_CLOSE_WIDTH = 0.0
 GRIPPER_SPEED = 0.1
+GRIPPER_GRASP_FORCE = 40.0
+GRIPPER_EPSILON_INNER = 0.005
+GRIPPER_EPSILON_OUTER = 0.08
 ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"
 TEACH_NAMESPACE = "NS_1"
@@ -36,11 +39,17 @@ TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
 if NAMESPACE_PREFIX:
     JOINT_STATES_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/joint_states")
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
-GRIPPER_ACTION_CANDIDATES = [
+GRIPPER_MOVE_ACTION_CANDIDATES = [
     "/franka_gripper/move",
     f"/{TEACH_NAMESPACE}/franka_gripper/move",
     "/fr3_gripper/move",
     f"/{TEACH_NAMESPACE}/fr3_gripper/move",
+]
+GRIPPER_GRASP_ACTION_CANDIDATES = [
+    "/franka_gripper/grasp",
+    f"/{TEACH_NAMESPACE}/franka_gripper/grasp",
+    "/fr3_gripper/grasp",
+    f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
 ]
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 
@@ -177,10 +186,6 @@ class SmartTrajectoryPlayer(Node):
             publisher.publish(trajectory)
         self.execution_start_time = time.monotonic()
         if self.gripper_events:
-            try:
-                self.ensure_gripper_ready()
-            except RuntimeError as exc:
-                self.get_logger().error(str(exc))
             self.schedule_gripper_events(time_offset)
         self.full_sent = True
         self.timer.cancel()
@@ -255,35 +260,47 @@ class SmartTrajectoryPlayer(Node):
 
     def run_gripper_event_after_delay(self, delay_sec, event_name):
         time.sleep(max(0.0, delay_sec))
-        width = GRIPPER_OPEN_WIDTH if event_name == "open" else GRIPPER_CLOSE_WIDTH
+        is_open = event_name == "open"
+        width = GRIPPER_OPEN_WIDTH if is_open else GRIPPER_CLOSE_WIDTH
+        action_candidates = GRIPPER_MOVE_ACTION_CANDIDATES if is_open else GRIPPER_GRASP_ACTION_CANDIDATES
+        action_type = "Move" if is_open else "Grasp"
         try:
-            action_name = self.ensure_gripper_ready()
+            action_name = self.ensure_gripper_ready(action_candidates)
         except RuntimeError as exc:
             self.get_logger().error(str(exc))
             return
 
-        goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
-        cmd = (
-            f"{ROS_SETUP}; "
-            f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
-        )
-        self.get_logger().info(f"Executing recorded gripper event '{event_name}' via {action_name}")
+        if is_open:
+            goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
+            cmd = (
+                f"{ROS_SETUP}; "
+                f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
+            )
+        else:
+            goal = shlex.quote(
+                f"{{width: {width}, speed: {GRIPPER_SPEED}, force: {GRIPPER_GRASP_FORCE}, epsilon: {{inner: {GRIPPER_EPSILON_INNER}, outer: {GRIPPER_EPSILON_OUTER}}}}}"
+            )
+            cmd = (
+                f"{ROS_SETUP}; "
+                f"ros2 action send_goal {action_name} franka_msgs/action/Grasp {goal}"
+            )
+        self.get_logger().info(f"Executing recorded gripper event '{event_name}' via {action_name} ({action_type})")
         subprocess.Popen(["bash", "-lc", cmd])
 
-    def ensure_gripper_ready(self):
+    def ensure_gripper_ready(self, action_candidates):
         deadline = time.monotonic() + GRIPPER_ACTION_WAIT_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            action_name = self.find_gripper_action()
+            action_name = self.find_gripper_action(action_candidates)
             if action_name is not None:
                 return action_name
             time.sleep(0.25)
 
         raise RuntimeError(
-            "No gripper move action server found for playback. Expected an already-running server on one of: "
-            f"{', '.join(GRIPPER_ACTION_CANDIDATES)}"
+            "No gripper action server found for playback. Expected an already-running server on one of: "
+            f"{', '.join(action_candidates)}"
         )
 
-    def find_gripper_action(self):
+    def find_gripper_action(self, action_candidates):
         result = subprocess.run(
             ["bash", "-lc", f"{ROS_SETUP}; ros2 action list"],
             stdout=subprocess.PIPE,
@@ -291,7 +308,7 @@ class SmartTrajectoryPlayer(Node):
             text=True,
         )
         action_names = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-        for candidate in GRIPPER_ACTION_CANDIDATES:
+        for candidate in action_candidates:
             if candidate in action_names:
                 return candidate
         return None
