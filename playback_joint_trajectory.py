@@ -1,41 +1,53 @@
+import csv
+import sys
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-import csv
-import sys
-import time
 
 JOINT_NAMES = [
-    'fr3_joint1', 'fr3_joint2', 'fr3_joint3',
-    'fr3_joint4', 'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
+    "fr3_joint1", "fr3_joint2", "fr3_joint3",
+    "fr3_joint4", "fr3_joint5", "fr3_joint6", "fr3_joint7"
 ]
 TOLERANCE = 0.05  # rad
-TIMEOUT_SEC = 15  # Optional: how long to wait for start position before abort
+WAIT_FOR_STATE_TIMEOUT_SEC = 15
+WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
+MIN_BLEND_TIME_SEC = 0.75
+MAX_BLEND_TIME_SEC = 6.0
+BLEND_SPEED_RAD_PER_SEC = 0.35
+MIN_BLEND_STEPS = 10
+MIN_SEGMENT_DT = 1e-3
+
 
 class SmartTrajectoryPlayer(Node):
     def __init__(self, csv_file):
-        super().__init__('smart_trajectory_player')
+        super().__init__("smart_trajectory_player")
         self.csv_file = csv_file
-        self.publisher_ = self.create_publisher(JointTrajectory, '/fr3_arm_controller/joint_trajectory', 10)
-        self.subscription = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        self.publisher_ = self.create_publisher(
+            JointTrajectory, "/fr3_arm_controller/joint_trajectory", 10
+        )
+        self.subscription = self.create_subscription(
+            JointState, "/joint_states", self.joint_state_callback, 10
+        )
 
         self.actual_positions = None
-        self.start_sent = False
         self.full_sent = False
-        self.start_time = self.get_clock().now().seconds_nanoseconds()[0]  ### For timeout
+        self.start_time_ns = self.get_clock().now().nanoseconds
 
-        self.trajectory = self.load_trajectory(csv_file)
-        self.start_position = self.trajectory.points[0].positions
+        self.recorded_points = self.load_trajectory_points(csv_file)
+        if not self.recorded_points:
+            raise RuntimeError(f"No trajectory points loaded from {csv_file}")
+        self.start_position = self.recorded_points[0][1]
 
         self.timer = self.create_timer(0.5, self.update)
 
-    def load_trajectory(self, filename):
-        with open(filename, newline='') as csvfile:
+    def load_trajectory_points(self, filename):
+        with open(filename, newline="") as csvfile:
             reader = csv.reader(csvfile)
-            next(reader)  # Skip header
+            next(reader)
             raw_points = []
             t0 = None
             for row in reader:
@@ -47,27 +59,10 @@ class SmartTrajectoryPlayer(Node):
                 raw_points.append((dt, positions))
 
         filtered_points = self.smooth_and_downsample_points(raw_points)
-
-        traj = JointTrajectory()
-        traj.joint_names = JOINT_NAMES
-
-        for idx, (dt, positions) in enumerate(filtered_points):
-            point = JointTrajectoryPoint()
-            point.positions = positions
-            if idx == 0:
-                point.velocities = [0.0] * len(positions)
-            else:
-                prev_dt, prev_pos = filtered_points[idx - 1]
-                seg_dt = max(dt - prev_dt, 1e-3)
-                point.velocities = [(p - pp) / seg_dt for p, pp in zip(positions, prev_pos)]
-            point.time_from_start.sec = int(dt)
-            point.time_from_start.nanosec = int((dt % 1) * 1e9)
-            traj.points.append(point)
-
         self.get_logger().info(
             f"Loaded {len(raw_points)} points, publishing {len(filtered_points)} smoothed points"
         )
-        return traj
+        return filtered_points
 
     def smooth_and_downsample_points(self, raw_points):
         if len(raw_points) <= 2:
@@ -101,54 +96,112 @@ class SmartTrajectoryPlayer(Node):
 
     def joint_state_callback(self, msg):
         joint_map = dict(zip(msg.name, msg.position))
-        # Warn if any joint is missing
-        if not all(j in joint_map for j in JOINT_NAMES):
-            missing = [j for j in JOINT_NAMES if j not in joint_map]
+        missing = [j for j in JOINT_NAMES if j not in joint_map]
+        if missing:
             self.get_logger().warn(f"Missing joints in /joint_states: {missing}")
-        self.actual_positions = [joint_map.get(j, 0.0) for j in JOINT_NAMES]
+            return
+        self.actual_positions = [joint_map[j] for j in JOINT_NAMES]
 
     def update(self):
-        # Timeout check (optional)
-        elapsed = self.get_clock().now().seconds_nanoseconds()[0] - self.start_time
-        if not self.start_sent and elapsed > TIMEOUT_SEC:
-            self.get_logger().error("Timeout: Never reached start position. Aborting.")
-            rclpy.shutdown()
+        if self.full_sent:
             return
 
-        if not self.start_sent:
-            self.get_logger().info("Sending move-to-start position")
-            self.send_start_position()
-            self.start_sent = True
-            return
-        if not self.full_sent and self.actual_positions is not None:
-            if self.is_at_start_position():
-                self.get_logger().info("Reached start position, sending full trajectory")
-                self.publisher_.publish(self.trajectory)
-                self.full_sent = True
-                self.timer.cancel()
-            else:
-                self.get_logger().info("Waiting to reach start position...")
-
-    def is_at_start_position(self):
+        elapsed = (self.get_clock().now().nanoseconds - self.start_time_ns) / 1e9
         if self.actual_positions is None:
-            return False
-        errors = [abs(a - d) for a, d in zip(self.actual_positions, self.start_position)]
-        return all(e < TOLERANCE for e in errors)
+            if elapsed > WAIT_FOR_STATE_TIMEOUT_SEC:
+                self.get_logger().error(
+                    "Timeout: Never received a complete /joint_states sample. Aborting."
+                )
+                rclpy.shutdown()
+            else:
+                self.get_logger().info("Waiting for current joint state...")
+            return
 
-    def send_start_position(self):
-        point = JointTrajectoryPoint()
-        point.positions = self.start_position
-        point.velocities = [0.0] * len(point.positions)
-        point.time_from_start.sec = 3
+        if self.publisher_.get_subscription_count() == 0:
+            if elapsed > WAIT_FOR_CONTROLLER_TIMEOUT_SEC:
+                self.get_logger().error(
+                    "Timeout: No controller subscriber on /fr3_arm_controller/joint_trajectory. Aborting."
+                )
+                rclpy.shutdown()
+            else:
+                self.get_logger().info("Waiting for trajectory controller subscriber...")
+            return
+
+        self.get_logger().info("Publishing blended trajectory from current pose into recording")
+        self.publisher_.publish(self.build_execution_trajectory())
+        self.full_sent = True
+        self.timer.cancel()
+
+    def build_execution_trajectory(self):
+        timed_points = []
+        start_error = self.max_joint_error(self.actual_positions, self.start_position)
+        blend_time = self.compute_blend_time(start_error)
+        current_time = 0.0
+
+        if start_error > TOLERANCE:
+            blend_steps = max(MIN_BLEND_STEPS, int(blend_time / MIN_POINT_DT))
+            blend_step_dt = max(MIN_POINT_DT, blend_time / blend_steps)
+            for step_idx in range(1, blend_steps + 1):
+                alpha = step_idx / blend_steps
+                positions = [
+                    current + alpha * (target - current)
+                    for current, target in zip(self.actual_positions, self.start_position)
+                ]
+                current_time += blend_step_dt
+                timed_points.append((current_time, positions))
+            self.get_logger().info(
+                f"Current pose differs from trajectory start by {start_error:.3f} rad; "
+                f"blending over {blend_time:.2f} s"
+            )
+        else:
+            self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
+
+        previous_recorded_dt = None
+        for dt, positions in self.recorded_points:
+            if previous_recorded_dt is None:
+                delta_dt = MIN_POINT_DT
+            else:
+                delta_dt = max(dt - previous_recorded_dt, MIN_POINT_DT)
+            current_time += delta_dt
+            timed_points.append((current_time, positions))
+            previous_recorded_dt = dt
 
         traj = JointTrajectory()
         traj.joint_names = JOINT_NAMES
-        traj.points.append(point)
-
-        # Optionally, set a header stamp if your controller is picky
         traj.header.stamp = self.get_clock().now().to_msg()
 
-        self.publisher_.publish(traj)
+        previous_time = 0.0
+        previous_positions = self.actual_positions
+        for idx, (point_time, positions) in enumerate(timed_points):
+            point = JointTrajectoryPoint()
+            point.positions = positions
+            if idx == 0:
+                segment_dt = max(point_time, MIN_SEGMENT_DT)
+            else:
+                segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
+            point.velocities = [
+                (pos - prev_pos) / segment_dt
+                for pos, prev_pos in zip(positions, previous_positions)
+            ]
+            point.time_from_start.sec = int(point_time)
+            point.time_from_start.nanosec = int((point_time % 1) * 1e9)
+            traj.points.append(point)
+            previous_time = point_time
+            previous_positions = positions
+
+        return traj
+
+    def compute_blend_time(self, max_error):
+        if max_error <= TOLERANCE:
+            return 0.0
+        return min(
+            MAX_BLEND_TIME_SEC,
+            max(MIN_BLEND_TIME_SEC, max_error / BLEND_SPEED_RAD_PER_SEC),
+        )
+
+    def max_joint_error(self, current_positions, target_positions):
+        return max(abs(a - b) for a, b in zip(current_positions, target_positions))
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -166,5 +219,6 @@ def main(args=None):
         rclpy.shutdown()
         print("Shutdown")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
