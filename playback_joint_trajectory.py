@@ -32,6 +32,12 @@ GRIPPER_SPEED = 0.1
 ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"
 TEACH_NAMESPACE = "NS_1"
+NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
+JOINT_STATES_TOPICS = ["/joint_states"]
+TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
+if NAMESPACE_PREFIX:
+    JOINT_STATES_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/joint_states")
+    TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
 GRIPPER_ACTION_CANDIDATES = [
     "/franka_gripper/move",
     f"/{TEACH_NAMESPACE}/franka_gripper/move",
@@ -45,12 +51,14 @@ class SmartTrajectoryPlayer(Node):
     def __init__(self, csv_file):
         super().__init__("smart_trajectory_player")
         self.csv_file = csv_file
-        self.publisher_ = self.create_publisher(
-            JointTrajectory, "/fr3_arm_controller/joint_trajectory", 10
-        )
-        self.subscription = self.create_subscription(
-            JointState, "/joint_states", self.joint_state_callback, 10
-        )
+        self.trajectory_publishers = [
+            self.create_publisher(JointTrajectory, topic, 10)
+            for topic in TRAJECTORY_TOPICS
+        ]
+        self.subscriptions = [
+            self.create_subscription(JointState, topic, self.joint_state_callback, 10)
+            for topic in JOINT_STATES_TOPICS
+        ]
 
         self.actual_positions = None
         self.full_sent = False
@@ -134,7 +142,7 @@ class SmartTrajectoryPlayer(Node):
         joint_map = dict(zip(msg.name, msg.position))
         missing = [j for j in JOINT_NAMES if j not in joint_map]
         if missing:
-            self.get_logger().warn(f"Missing joints in /joint_states: {missing}")
+            self.get_logger().warn(f"Missing joints in joint state sample: {missing}")
             return
         self.actual_positions = [joint_map[j] for j in JOINT_NAMES]
 
@@ -146,26 +154,31 @@ class SmartTrajectoryPlayer(Node):
         if self.actual_positions is None:
             if elapsed > WAIT_FOR_STATE_TIMEOUT_SEC:
                 self.get_logger().error(
-                    "Timeout: Never received a complete /joint_states sample. Aborting."
+                    "Timeout: Never received a complete joint state sample. Expected one of: " + ", ".join(JOINT_STATES_TOPICS)
                 )
                 rclpy.shutdown()
             else:
-                self.get_logger().info("Waiting for current joint state...")
+                self.get_logger().info("Waiting for current joint state on: " + ", ".join(JOINT_STATES_TOPICS))
             return
 
-        if self.publisher_.get_subscription_count() == 0:
+        ready_publishers = [pub for pub in self.trajectory_publishers if pub.get_subscription_count() > 0]
+        if not ready_publishers:
             if elapsed > WAIT_FOR_CONTROLLER_TIMEOUT_SEC:
                 self.get_logger().error(
-                    "Timeout: No controller subscriber on /fr3_arm_controller/joint_trajectory. Aborting."
+                    "Timeout: No controller subscriber on any trajectory topic. Expected one of: "
+                    + ", ".join(TRAJECTORY_TOPICS)
                 )
                 rclpy.shutdown()
             else:
-                self.get_logger().info("Waiting for trajectory controller subscriber...")
+                self.get_logger().info(
+                    "Waiting for trajectory controller subscriber on: " + ", ".join(TRAJECTORY_TOPICS)
+                )
             return
 
         self.get_logger().info("Publishing blended trajectory from current pose into recording")
         trajectory, time_offset = self.build_execution_trajectory()
-        self.publisher_.publish(trajectory)
+        for publisher in ready_publishers:
+            publisher.publish(trajectory)
         self.execution_start_time = time.monotonic()
         if self.gripper_events:
             try:
