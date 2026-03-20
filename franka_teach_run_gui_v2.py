@@ -45,6 +45,7 @@ TEACH_NAMESPACE = "NS_1"
 GRIPPER_OPEN_WIDTH = 0.08
 GRIPPER_CLOSE_WIDTH = 0.0
 GRIPPER_SPEED = 0.1
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # -------------------------------------------
 
 def bash_cmd(cmd: str):
@@ -306,15 +307,15 @@ class FR3TeachRunGUI(tk.Tk):
             if not custom_name.endswith(".csv"):
                 custom_name += ".csv"
             recording_filename = custom_name
-            recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(custom_name)}"
-            self._append_log(f"Starting joint recorder... output file: {custom_name}")
         else:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             recording_filename = f"joint_trajectory_{timestamp}.csv"
-            recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(recording_filename)}"
-            self._append_log(f"Starting joint recorder... output file: {recording_filename}")
 
-        self.current_recording_filename = recording_filename
+        recording_path = os.path.abspath(os.path.join(SCRIPT_DIR, recording_filename))
+        recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(recording_path)}"
+        self._append_log(f"Starting joint recorder... output file: {recording_path}")
+
+        self.current_recording_filename = recording_path
         self.teach_start_time_ns = time.time_ns()
         self.recorded_gripper_events = []
         self.teach_pg.start(bash_cmd(recorder_cmd))
