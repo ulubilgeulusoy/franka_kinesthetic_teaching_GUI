@@ -500,7 +500,7 @@ class FR3TeachRunGUI(tk.Tk):
         self._append_log(f"Selected CSV: {csv_path}")
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
-            f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP}"
+            f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE}"
         ))
 
         def delayed_start():
