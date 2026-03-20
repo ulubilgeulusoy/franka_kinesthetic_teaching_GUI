@@ -12,7 +12,7 @@ The GUI launches the underlying ROS 2 processes for recording and playback and s
 
 ## Repo contents
 
-- `franka_teach_run_gui_v2.py`: Tkinter GUI that launches teach and run workflows.
+- `franka_teach_run_gui_v2.py`: Tkinter GUI that launches gravity mode, teach, and run workflows.
 - `record_joint_trajectory.py`: Records joint states to a timestamped CSV file.
 - `playback_joint_trajectory.py`: Loads a CSV, smooths it for playback, blends from the current robot pose, and publishes a joint trajectory.
 - `run_gui.sh`: Convenience launcher for the GUI.
@@ -20,9 +20,14 @@ The GUI launches the underlying ROS 2 processes for recording and playback and s
 ## Features
 
 ### Teach mode
-- Launches the gravity compensation example controller.
+- Can launch the gravity compensation example controller automatically if it is not already running.
 - Records joint motion while the arm is moved by hand.
-- Saves a timestamped CSV when recording is stopped.
+- Prompts for an optional custom CSV filename before recording starts.
+- Falls back to the default timestamped CSV name if no custom name is provided.
+
+### Gravity mode
+- Provides a dedicated button to start or stop gravity compensation independently from recording.
+- Lets you put the robot into gravity compensation without starting the recorder.
 
 ### Run mode
 - Lets you choose a saved CSV trajectory from the GUI.
@@ -65,11 +70,13 @@ cd ~/franka_kinesthetic_teaching_GUI
 
 ### Record a trajectory
 
-1. Click `Start Teach (Record)`.
-2. Wait for gravity compensation to come up.
-3. Move the arm by hand to demonstrate the motion.
-4. Click `Stop Teach (Save)`.
-5. A CSV named like `joint_trajectory_YYYYMMDD_HHMMSS.csv` is written in the repo directory.
+1. Optionally click `Start Gravity Mode` if you want gravity compensation without recording yet.
+2. Click `Start Teach (Record)`.
+3. Optionally enter a custom CSV filename, or leave the prompt blank to use the default timestamped name.
+4. Wait for gravity compensation to come up if it is not already active.
+5. Move the arm by hand to demonstrate the motion.
+6. Click `Stop Teach (Save)`.
+7. The recording is written in the repo directory using either your custom name or a default name like `joint_trajectory_YYYYMMDD_HHMMSS.csv`.
 
 ### Play back a trajectory
 
@@ -89,6 +96,9 @@ The recorder stores one row per sample:
 - columns 2-8: joint positions
 
 The file is written exactly as recorded. Playback smoothing is applied in memory at replay time and does not modify the CSV.
+
+If no filename is provided when recording starts, the recorder saves to the default format:
+- `joint_trajectory_YYYYMMDD_HHMMSS.csv`
 
 ## Playback smoothing and blending
 
@@ -123,7 +133,8 @@ Note: recording and playback currently use different joint-state topics. That re
   `fr3_joint1` through `fr3_joint7`.
 - The recorder currently stores `msg.position` as received; it assumes the incoming joint order matches the robot joints you want to replay.
 - The GUI uses fixed startup delays for some launched processes. On slow systems, ROS stack startup may still take longer.
-- CSV files are saved into the repo working directory by default.
+- CSV files are saved into the repo working directory by default unless you pass a path as the custom recording name.
+- The teach button's filename prompt is optional; leaving it blank keeps the old timestamp-based behavior.
 
 ## Troubleshooting
 

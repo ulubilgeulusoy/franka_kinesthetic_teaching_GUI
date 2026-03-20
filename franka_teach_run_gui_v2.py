@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import os
+import shlex
 import signal
 import subprocess
 import threading
 import time
 import queue
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 # --------- CONFIG (edit if needed) ---------
 ROS_SETUP = "source ~/franka_ws/install/setup.bash"
@@ -78,6 +79,7 @@ class FR3TeachRunGUI(tk.Tk):
 
         self.teaching = False
         self.running = False
+        self.gravity_mode = False
 
         self._build_ui()
         self.after(50, self._poll_queue)
@@ -88,6 +90,9 @@ class FR3TeachRunGUI(tk.Tk):
 
         ctl = ttk.Frame(root)
         ctl.pack(fill="x", pady=(0, 8))
+
+        self.btn_gravity = ttk.Button(ctl, text="Start Gravity Mode", command=self.on_gravity_toggle)
+        self.btn_gravity.pack(side="left", padx=(0, 8))
 
         self.btn_teach = ttk.Button(ctl, text="Start Teach (Record)", command=self.on_teach_toggle)
         self.btn_teach.pack(side="left", padx=(0, 8))
@@ -130,23 +135,76 @@ class FR3TeachRunGUI(tk.Tk):
         self.after(50, self._poll_queue)
 
     # Actions
+    def on_gravity_toggle(self):
+        if not self.gravity_mode:
+            self.start_gravity_mode()
+        else:
+            self.stop_gravity_mode()
+
     def on_teach_toggle(self):
         if not self.teaching:
             self.start_teach()
         else:
             self.stop_teach()
 
-    def start_teach(self):
+    def launch_gravity_controller(self):
         self._append_log("Starting gravity compensation controller...")
         self.status_var.set("Launching gravity compensation...")
         self.teach_pg.start(bash_cmd(
             "ros2 launch franka_bringup example.launch.py "
             "controller_name:=gravity_compensation_example_controller"
         ))
+        self.gravity_mode = True
+        self.btn_gravity.configure(text="Stop Gravity Mode")
 
-        time.sleep(1.0)
-        self._append_log("Starting joint recorder... (stop to save CSV)")
-        self.teach_pg.start(bash_cmd("python3 record_joint_trajectory.py"))
+    def start_gravity_mode(self):
+        if self.teach_pg.is_alive():
+            messagebox.showwarning(
+                "Teach processes running",
+                "Teach or gravity mode processes are already running. Stop them first if needed."
+            )
+            return
+        self.launch_gravity_controller()
+        self.status_var.set("Gravity compensation active.")
+
+    def stop_gravity_mode(self):
+        self._append_log("Stopping gravity compensation...")
+        self.teach_pg.terminate_all(sig=signal.SIGINT)
+        time.sleep(0.5)
+        self.teach_pg.terminate_all(sig=signal.SIGTERM)
+        self.teach_pg.clear_finished()
+        self.gravity_mode = False
+        self.teaching = False
+        self.btn_gravity.configure(text="Start Gravity Mode")
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.status_var.set("Gravity compensation stopped.")
+
+    def start_teach(self):
+        custom_name = simpledialog.askstring(
+            "Recording File Name",
+            "Optional: enter a CSV filename for this recording. Leave blank to use the default timestamped name.",
+            parent=self,
+        )
+        if custom_name is None:
+            custom_name = ""
+        custom_name = custom_name.strip()
+
+        if not self.gravity_mode:
+            self.launch_gravity_controller()
+            time.sleep(1.0)
+        else:
+            self._append_log("Gravity compensation already active; starting recorder only...")
+
+        if custom_name:
+            if not custom_name.endswith(".csv"):
+                custom_name += ".csv"
+            recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(custom_name)}"
+            self._append_log(f"Starting joint recorder... output file: {custom_name}")
+        else:
+            recorder_cmd = "python3 record_joint_trajectory.py"
+            self._append_log("Starting joint recorder... (stop to save CSV)")
+
+        self.teach_pg.start(bash_cmd(recorder_cmd))
 
         self.teaching = True
         self.btn_teach.configure(text="Stop Teach (Save)")
@@ -160,7 +218,9 @@ class FR3TeachRunGUI(tk.Tk):
         self.teach_pg.clear_finished()
 
         self.teaching = False
+        self.gravity_mode = False
         self.btn_teach.configure(text="Start Teach (Record)")
+        self.btn_gravity.configure(text="Start Gravity Mode")
         self.status_var.set("Teach stopped. Check CSV in current directory.")
 
     def on_run_clicked(self):
@@ -213,6 +273,12 @@ class FR3TeachRunGUI(tk.Tk):
         self.run_pg.terminate_all(sig=signal.SIGTERM)
         self.teach_pg.clear_finished()
         self.run_pg.clear_finished()
+        self.teaching = False
+        self.gravity_mode = False
+        self.running = False
+        self.btn_gravity.configure(text="Start Gravity Mode")
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.btn_run.configure(text="Run Trajectory")
         self.status_var.set("All processes signaled to stop.")
 
     def open_csv_dir(self):

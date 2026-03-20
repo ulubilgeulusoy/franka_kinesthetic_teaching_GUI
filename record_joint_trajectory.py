@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 import csv
+import sys
 from datetime import datetime
 
 class JointRecorder(Node):
@@ -30,6 +31,17 @@ class JointRecorder(Node):
             writer.writerows(self.joint_data)
         self.get_logger().info(f'Saved trajectory to {filename}')
 
+def build_output_filename():
+    if len(sys.argv) >= 2 and sys.argv[1].strip():
+        filename = sys.argv[1].strip()
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+        return filename
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f'joint_trajectory_{timestamp}.csv'
+
+
 def main(args=None):
     rclpy.init(args=args)
     recorder = JointRecorder()
@@ -37,9 +49,7 @@ def main(args=None):
     try:
         rclpy.spin(recorder)
     except KeyboardInterrupt:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'joint_trajectory_{timestamp}.csv'
-        recorder.save_to_csv(filename)
+        recorder.save_to_csv(build_output_filename())
 
     recorder.destroy_node()
     rclpy.shutdown()
