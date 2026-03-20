@@ -10,8 +10,36 @@ import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
+
+def load_ros_environment(setup_cmd: str):
+    try:
+        result = subprocess.run(
+            ["bash", "-lc", f"{setup_cmd}; env -0"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        message = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"Failed to load ROS environment: {message}") from exc
+
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        key, _, value = entry.partition(b"=")
+        os.environ[key.decode()] = value.decode()
+
+
+# Load the ROS environment into this GUI process so native rclpy clients
+# behave the same whether the app is launched locally or through SSH/X11.
+ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
+load_ros_environment(ROS_SETUP)
+
+import rclpy
+from rclpy.action import ActionClient
+from franka_msgs.action import Move
+
 # --------- CONFIG (edit if needed) ---------
-ROS_SETUP = "source ~/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"  # change if needed
 TEACH_NAMESPACE = "NS_1"
 GRIPPER_OPEN_WIDTH = 0.08
@@ -88,6 +116,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = False
         self.running = False
         self.gravity_mode = False
+        self.ros_initialized = False
         self.current_recording_filename = None
         self.teach_start_time_ns = None
         self.recorded_gripper_events = []
@@ -95,6 +124,11 @@ class FR3TeachRunGUI(tk.Tk):
         self._build_ui()
         self._refresh_controls()
         self.after(50, self._poll_queue)
+
+    def ensure_ros_client_ready(self):
+        if not self.ros_initialized:
+            rclpy.init(args=None)
+            self.ros_initialized = True
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=10)
@@ -355,36 +389,54 @@ class FR3TeachRunGUI(tk.Tk):
 
         def worker():
             self.ensure_gripper_node_running()
+            self.ensure_ros_client_ready()
 
-            action_list_proc = subprocess.run(
-                bash_cmd("ros2 action list"),
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            action_names = {
-                line.strip() for line in action_list_proc.stdout.splitlines() if line.strip()
-            }
+            node = rclpy.create_node(f"gripper_gui_client_{int(time.time() * 1000)}")
+            client = None
+            try:
+                for candidate in self.get_gripper_action_candidates():
+                    trial_client = ActionClient(node, Move, candidate)
+                    if trial_client.wait_for_server(timeout_sec=1.0):
+                        client = trial_client
+                        action_name = candidate
+                        break
+                    trial_client.destroy()
 
-            action_name = next(
-                (candidate for candidate in self.get_gripper_action_candidates() if candidate in action_names),
-                None,
-            )
-            if action_name is None:
-                self.line_queue.put(
-                    "No gripper move action server found. Expected one of: "
-                    + ", ".join(self.get_gripper_action_candidates())
-                )
-                return
+                if client is None:
+                    self.line_queue.put(
+                        "No gripper move action server found. Expected one of: "
+                        + ", ".join(self.get_gripper_action_candidates())
+                    )
+                    return
 
-            self.line_queue.put(f"Sending {label} command to {action_name}")
-            goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
-            self.gripper_pg.start(
-                bash_cmd(
-                    f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
-                )
-            )
+                self.line_queue.put(f"Sending {label} command to {action_name}")
+                goal_msg = Move.Goal()
+                goal_msg.width = width
+                goal_msg.speed = GRIPPER_SPEED
+
+                goal_future = client.send_goal_async(goal_msg)
+                while rclpy.ok() and not goal_future.done():
+                    rclpy.spin_once(node, timeout_sec=0.1)
+
+                goal_handle = goal_future.result()
+                if goal_handle is None or not goal_handle.accepted:
+                    self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
+                    return
+
+                result_future = goal_handle.get_result_async()
+                while rclpy.ok() and not result_future.done():
+                    rclpy.spin_once(node, timeout_sec=0.1)
+
+                result = result_future.result()
+                if result is not None and result.status == 4:
+                    self.line_queue.put(f"Gripper {label.lower()} succeeded")
+                else:
+                    status = getattr(result, "status", "unknown")
+                    self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
+            finally:
+                if client is not None:
+                    client.destroy()
+                node.destroy_node()
 
         threading.Thread(target=worker, daemon=True).start()
 
