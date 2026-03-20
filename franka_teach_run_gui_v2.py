@@ -328,10 +328,17 @@ class FR3TeachRunGUI(tk.Tk):
     def stop_teach(self):
         self._append_log("Stopping teach (sending SIGINT)…")
         self.teach_pg.terminate_all(sig=signal.SIGINT)
-        time.sleep(0.5)
-        self.teach_pg.terminate_all(sig=signal.SIGTERM)
-        self.teach_pg.clear_finished()
 
+        deadline = time.time() + 5.0
+        while self.teach_pg.is_alive() and time.time() < deadline:
+            time.sleep(0.1)
+
+        if self.teach_pg.is_alive():
+            self._append_log("Teach processes did not exit after SIGINT; sending SIGTERM…")
+            self.teach_pg.terminate_all(sig=signal.SIGTERM)
+            time.sleep(0.5)
+
+        self.teach_pg.clear_finished()
         self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
@@ -353,17 +360,44 @@ class FR3TeachRunGUI(tk.Tk):
     def append_gripper_events_to_csv(self):
         if not self.current_recording_filename or not self.recorded_gripper_events:
             return
+
+        deadline = time.time() + 5.0
+        while not os.path.exists(self.current_recording_filename) and time.time() < deadline:
+            time.sleep(0.1)
+
         if not os.path.exists(self.current_recording_filename):
             self._append_log(
                 f"Recording file not found for gripper event append: {self.current_recording_filename}"
             )
             return
+
+        with open(self.current_recording_filename, newline='') as f:
+            existing_rows = list(csv.reader(f))
+
+        existing_gripper_rows = {
+            (row[0], row[2])
+            for row in existing_rows[1:]
+            if len(row) >= 3 and row[1] == 'gripper'
+        }
+
+        rows_to_append = []
+        for timestamp_ns, event_name in self.recorded_gripper_events:
+            key = (str(timestamp_ns), event_name)
+            if key not in existing_gripper_rows:
+                rows_to_append.append([timestamp_ns, 'gripper', event_name, '', '', '', '', '', '', ''])
+
+        if not rows_to_append:
+            self._append_log(
+                f"Gripper events already present in {self.current_recording_filename}; nothing to append"
+            )
+            return
+
         with open(self.current_recording_filename, 'a', newline='') as f:
             writer = csv.writer(f)
-            for timestamp_ns, event_name in self.recorded_gripper_events:
-                writer.writerow([timestamp_ns, 'gripper', event_name, '', '', '', '', '', '', ''])
+            writer.writerows(rows_to_append)
+
         self._append_log(
-            f"Appended {len(self.recorded_gripper_events)} gripper event(s) to {self.current_recording_filename}"
+            f"Appended {len(rows_to_append)} gripper event(s) to {self.current_recording_filename}"
         )
 
     def launch_gripper_node(self):
