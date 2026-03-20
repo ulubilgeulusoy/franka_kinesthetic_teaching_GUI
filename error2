@@ -1,0 +1,9 @@
+[franka_gripper_node-7] [ERROR] [1774039673.574666015] [franka_gripper]: libfranka: UDP receive: Timeout
+[rviz2-1] [INFO] [1774039674.280398656] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
+[rviz2-1] [INFO] [1774039674.282127868] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/monitored_planning_scene'
+[franka_gripper_node-7] terminate called after throwing an instance of 'Poco::Net::NetException'
+[franka_gripper_node-7]   what():  Net Exception
+[ERROR] [franka_gripper_node-7]: process has died [pid 202064, exit code -6, cmd '/home/parc/franka_ws/install/franka_gripper/lib/franka_gripper/franka_gripper_node --ros-args -r __node:=franka_gripper -r __ns:=/ --params-file /tmp/launch_params_chl0dfa4 --params-file /home/parc/franka_ws/install/franka_gripper/share/franka_gripper/config/franka_gripper_node.yaml'].
+[ERROR] [1774039680.058969653] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[ERROR] [1774039692.156931035] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[ERROR] [1774039694.971282250] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
