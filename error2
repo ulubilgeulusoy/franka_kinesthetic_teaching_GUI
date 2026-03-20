@@ -1,8 +1,14 @@
-[franka_gripper_node-7] [ERROR] [1774040457.124909682] [NS_1.franka_gripper]: libfranka: UDP receive: Timeout
-[franka_gripper_node-7] terminate called after throwing an instance of 'Poco::Net::NetException'
-[franka_gripper_node-7]   what():  Net Exception
-[ERROR] [franka_gripper_node-7]: process has died [pid 206504, exit code -6, cmd '/home/parc/franka_ws/install/franka_gripper/lib/franka_gripper/franka_gripper_node --ros-args -r __node:=franka_gripper -r __ns:=/NS_1 --params-file /tmp/launch_params_1tmtye7s --params-file /home/parc/franka_ws/install/franka_gripper/share/franka_gripper/config/franka_gripper_node.yaml'].
-[rviz2-1] [INFO] [1774040461.805952467] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Failed to call service get_planning_scene, have you launched move_group or called psm.providePlanningSceneService()?
-[ERROR] [1774040463.302148026] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
-[ERROR] [1774040474.290665412] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
-[ERROR] [1774040477.225624757] [smart_trajectory_player]: No gripper move action server found for playback. Expected one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[INFO] [1774041055.762648618] [smart_trajectory_player]: Loaded 2 gripper event(s)
+[INFO] [1774041056.263513579] [smart_trajectory_player]: Waiting for current joint state on: /NS_1/joint_states, /joint_states
+[INFO] [1774041056.763200783] [smart_trajectory_player]: Waiting for current joint state on: /NS_1/joint_states, /joint_states
+[INFO] [1774041057.263230978] [smart_trajectory_player]: Publishing blended trajectory from current pose into recording
+[INFO] [1774041057.263486658] [smart_trajectory_player]: Current pose already near trajectory start; skipping blend-in move
+[rviz2-1] [ERROR] [1774041058.944973249] [moveit_ros_visualization.motion_planning_frame]: Action server: /recognize_objects not available
+[rviz2-1] [INFO] [1774041059.230047284] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.0017611 seconds
+[rviz2-1] [INFO] [1774041059.230082658] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+[rviz2-1] [INFO] [1774041060.432352666] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
+[rviz2-1] [INFO] [1774041060.433271702] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/monitored_planning_scene'
+[rviz2-1] [INFO] [1774041065.437144072] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Failed to call service get_planning_scene, have you launched move_group or called psm.providePlanningSceneService()?
+[ERROR] [1774041065.894865920] [smart_trajectory_player]: No gripper move action server found for playback. Expected an already-running server on one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[ERROR] [1774041074.726284793] [smart_trajectory_player]: No gripper move action server found for playback. Expected an already-running server on one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[ERROR] [1774041077.313493317] [smart_trajectory_player]: No gripper move action server found for playback. Expected an already-running server on one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
