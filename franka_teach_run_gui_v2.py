@@ -262,7 +262,6 @@ class FR3TeachRunGUI(tk.Tk):
             "ros2 launch franka_bringup example.launch.py "
             "controller_name:=gravity_compensation_example_controller"
         ))
-        self.ensure_gripper_node_running()
         self.gravity_mode = True
         self.btn_gravity.configure(text="Stop Gravity Mode")
         self._refresh_controls()
@@ -343,10 +342,7 @@ class FR3TeachRunGUI(tk.Tk):
             time.sleep(0.5)
 
         self.teach_pg.clear_finished()
-        self.gripper_node_pg.terminate_all(sig=signal.SIGTERM)
-        time.sleep(0.2)
-        self.gripper_node_pg.terminate_all(sig=signal.SIGKILL)
-        self.gripper_node_pg.clear_finished()
+        self.shutdown_gripper_node()
         self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
@@ -414,9 +410,12 @@ class FR3TeachRunGUI(tk.Tk):
             f"ros2 launch franka_gripper gripper.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE} arm_id:=fr3"
         ))
 
-    def ensure_gripper_node_running(self):
-        if not self.gripper_node_pg.is_alive():
-            self.launch_gripper_node()
+    def shutdown_gripper_node(self):
+        self.gripper_node_pg.terminate_all(sig=signal.SIGTERM)
+        time.sleep(0.2)
+        self.gripper_node_pg.terminate_all(sig=signal.SIGKILL)
+        self.gripper_node_pg.clear_finished()
+
 
     def wait_for_gripper_action_server(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
         self.ensure_ros_client_ready()
@@ -436,7 +435,6 @@ class FR3TeachRunGUI(tk.Tk):
         return None
 
     def ensure_gripper_ready(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
-        self.ensure_gripper_node_running()
         action_name = self.wait_for_gripper_action_server(action_type, candidates, timeout_sec=timeout_sec)
         if action_name is None:
             self._append_log(
@@ -468,9 +466,14 @@ class FR3TeachRunGUI(tk.Tk):
 
         def worker():
             candidates = self.get_gripper_move_action_candidates()
-            action_name = self.ensure_gripper_ready(Move, candidates)
+            self.shutdown_gripper_node()
+            self.launch_gripper_node()
+            action_name = self.wait_for_gripper_action_server(Move, candidates)
             if action_name is None:
+                self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+                self.shutdown_gripper_node()
                 return
+            self.line_queue.put(f"Gripper action server ready: {action_name}")
 
             self.ensure_ros_client_ready()
             node = rclpy.create_node(f"gripper_gui_client_{int(time.time() * 1000)}")
@@ -511,6 +514,7 @@ class FR3TeachRunGUI(tk.Tk):
                 if client is not None:
                     client.destroy()
                 node.destroy_node()
+                self.shutdown_gripper_node()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -519,9 +523,14 @@ class FR3TeachRunGUI(tk.Tk):
 
         def worker():
             candidates = self.get_gripper_grasp_action_candidates()
-            action_name = self.ensure_gripper_ready(Grasp, candidates)
+            self.shutdown_gripper_node()
+            self.launch_gripper_node()
+            action_name = self.wait_for_gripper_action_server(Grasp, candidates)
             if action_name is None:
+                self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+                self.shutdown_gripper_node()
                 return
+            self.line_queue.put(f"Gripper action server ready: {action_name}")
 
             self.ensure_ros_client_ready()
             node = rclpy.create_node(f"gripper_grasp_client_{int(time.time() * 1000)}")
