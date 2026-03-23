@@ -37,6 +37,7 @@ load_ros_environment(ROS_SETUP)
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.executors import SingleThreadedExecutor
 from franka_msgs.action import Grasp, Move
 
 # --------- CONFIG (edit if needed) ---------
@@ -119,10 +120,15 @@ class FR3TeachRunGUI(tk.Tk):
         self.gripper_pg = ProcessGroup(self.line_queue)
 
         self.teaching = False
+        self.current_playback_proc = None
         self.running = False
         self.gravity_mode = False
         self.ros_initialized = False
+        self.ros_init_lock = threading.Lock()
+        self.gripper_action_lock = threading.Lock()
+        self.gripper_busy = False
         self.current_recording_filename = None
+        self.current_playback_proc = None
         self.teach_start_time_ns = None
         self.recorded_gripper_events = []
 
@@ -131,9 +137,23 @@ class FR3TeachRunGUI(tk.Tk):
         self.after(50, self._poll_queue)
 
     def ensure_ros_client_ready(self):
-        if not self.ros_initialized:
-            rclpy.init(args=None)
-            self.ros_initialized = True
+        with self.ros_init_lock:
+            if not self.ros_initialized:
+                rclpy.init(args=None)
+                self.ros_initialized = True
+
+    def set_gripper_busy(self, busy: bool):
+        self.gripper_busy = busy
+        self.after(0, self._refresh_controls)
+
+    def spin_until_future_complete(self, node, future, timeout_sec: float = 0.1):
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        try:
+            while rclpy.ok() and not future.done():
+                executor.spin_once(timeout_sec=timeout_sec)
+        finally:
+            executor.remove_node(node)
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=10)
@@ -229,8 +249,9 @@ class FR3TeachRunGUI(tk.Tk):
             self.btn_gravity.configure(state=gravity_enabled)
             self.btn_open_dir.configure(state=open_dir_enabled)
 
-        self.btn_gripper_open.configure(state="normal")
-        self.btn_gripper_close.configure(state="normal")
+        gripper_enabled = "disabled" if self.gripper_busy else "normal"
+        self.btn_gripper_open.configure(state=gripper_enabled)
+        self.btn_gripper_close.configure(state=gripper_enabled)
 
         any_active = (
             self.teaching
@@ -348,6 +369,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.gravity_mode = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
+        self.current_playback_proc = None
         self.recorded_gripper_events = []
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
@@ -462,118 +484,128 @@ class FR3TeachRunGUI(tk.Tk):
         ]
 
     def send_gripper_move_command(self, width: float, label: str):
+        if self.gripper_busy:
+            self._append_log("Gripper command already in progress; ignoring new request.")
+            return
         self._append_log(f"Sending gripper {label.lower()} command...")
 
         def worker():
-            candidates = self.get_gripper_move_action_candidates()
-            self.shutdown_gripper_node()
-            self.launch_gripper_node()
-            action_name = self.wait_for_gripper_action_server(Move, candidates)
-            if action_name is None:
-                self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+            with self.gripper_action_lock:
+                self.set_gripper_busy(True)
+                candidates = self.get_gripper_move_action_candidates()
                 self.shutdown_gripper_node()
-                return
-            self.line_queue.put(f"Gripper action server ready: {action_name}")
-
-            self.ensure_ros_client_ready()
-            node = rclpy.create_node(f"gripper_gui_client_{int(time.time() * 1000)}")
-            client = None
-            try:
-                client = ActionClient(node, Move, action_name)
-                if not client.wait_for_server(timeout_sec=1.0):
-                    self.line_queue.put(
-                        f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
-                    )
+                self.launch_gripper_node()
+                action_name = self.wait_for_gripper_action_server(Move, candidates)
+                if action_name is None:
+                    self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+                    self.shutdown_gripper_node()
+                    self.set_gripper_busy(False)
                     return
+                self.line_queue.put(f"Gripper action server ready: {action_name}")
 
-                self.line_queue.put(f"Sending {label} command to {action_name}")
-                goal_msg = Move.Goal()
-                goal_msg.width = width
-                goal_msg.speed = GRIPPER_SPEED
+                self.ensure_ros_client_ready()
+                node = rclpy.create_node(f"gripper_gui_client_{int(time.time() * 1000)}")
+                client = None
+                try:
+                    client = ActionClient(node, Move, action_name)
+                    if not client.wait_for_server(timeout_sec=1.0):
+                        self.line_queue.put(
+                            f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
+                        )
+                        return
 
-                goal_future = client.send_goal_async(goal_msg)
-                while rclpy.ok() and not goal_future.done():
-                    rclpy.spin_once(node, timeout_sec=0.1)
+                    self.line_queue.put(f"Sending {label} command to {action_name}")
+                    goal_msg = Move.Goal()
+                    goal_msg.width = width
+                    goal_msg.speed = GRIPPER_SPEED
 
-                goal_handle = goal_future.result()
-                if goal_handle is None or not goal_handle.accepted:
-                    self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
-                    return
+                    goal_future = client.send_goal_async(goal_msg)
+                    self.spin_until_future_complete(node, goal_future)
 
-                result_future = goal_handle.get_result_async()
-                while rclpy.ok() and not result_future.done():
-                    rclpy.spin_once(node, timeout_sec=0.1)
+                    goal_handle = goal_future.result()
+                    if goal_handle is None or not goal_handle.accepted:
+                        self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
+                        return
 
-                result = result_future.result()
-                if result is not None and result.status == 4:
-                    self.line_queue.put(f"Gripper {label.lower()} succeeded")
-                else:
-                    status = getattr(result, "status", "unknown")
-                    self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
-            finally:
-                if client is not None:
-                    client.destroy()
-                node.destroy_node()
-                self.shutdown_gripper_node()
+                    result_future = goal_handle.get_result_async()
+                    self.spin_until_future_complete(node, result_future)
+
+                    result = result_future.result()
+                    if result is not None and result.status == 4:
+                        self.line_queue.put(f"Gripper {label.lower()} succeeded")
+                    else:
+                        status = getattr(result, "status", "unknown")
+                        self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
+                finally:
+                    if client is not None:
+                        client.destroy()
+                    node.destroy_node()
+                    self.shutdown_gripper_node()
+                    self.set_gripper_busy(False)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def send_gripper_close_command(self, width: float, label: str):
+        if self.gripper_busy:
+            self._append_log("Gripper command already in progress; ignoring new request.")
+            return
         self._append_log(f"Sending gripper {label.lower()} command...")
 
         def worker():
-            candidates = self.get_gripper_grasp_action_candidates()
-            self.shutdown_gripper_node()
-            self.launch_gripper_node()
-            action_name = self.wait_for_gripper_action_server(Grasp, candidates)
-            if action_name is None:
-                self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+            with self.gripper_action_lock:
+                self.set_gripper_busy(True)
+                candidates = self.get_gripper_grasp_action_candidates()
                 self.shutdown_gripper_node()
-                return
-            self.line_queue.put(f"Gripper action server ready: {action_name}")
-
-            self.ensure_ros_client_ready()
-            node = rclpy.create_node(f"gripper_grasp_client_{int(time.time() * 1000)}")
-            client = None
-            try:
-                client = ActionClient(node, Grasp, action_name)
-                if not client.wait_for_server(timeout_sec=1.0):
-                    self.line_queue.put(
-                        f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
-                    )
+                self.launch_gripper_node()
+                action_name = self.wait_for_gripper_action_server(Grasp, candidates)
+                if action_name is None:
+                    self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
+                    self.shutdown_gripper_node()
+                    self.set_gripper_busy(False)
                     return
+                self.line_queue.put(f"Gripper action server ready: {action_name}")
 
-                self.line_queue.put(f"Sending {label} command to {action_name}")
-                goal_msg = Grasp.Goal()
-                goal_msg.width = width
-                goal_msg.speed = GRIPPER_SPEED
-                goal_msg.force = GRIPPER_GRASP_FORCE
-                goal_msg.epsilon.inner = GRIPPER_EPSILON_INNER
-                goal_msg.epsilon.outer = GRIPPER_EPSILON_OUTER
+                self.ensure_ros_client_ready()
+                node = rclpy.create_node(f"gripper_grasp_client_{int(time.time() * 1000)}")
+                client = None
+                try:
+                    client = ActionClient(node, Grasp, action_name)
+                    if not client.wait_for_server(timeout_sec=1.0):
+                        self.line_queue.put(
+                            f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
+                        )
+                        return
 
-                goal_future = client.send_goal_async(goal_msg)
-                while rclpy.ok() and not goal_future.done():
-                    rclpy.spin_once(node, timeout_sec=0.1)
+                    self.line_queue.put(f"Sending {label} command to {action_name}")
+                    goal_msg = Grasp.Goal()
+                    goal_msg.width = width
+                    goal_msg.speed = GRIPPER_SPEED
+                    goal_msg.force = GRIPPER_GRASP_FORCE
+                    goal_msg.epsilon.inner = GRIPPER_EPSILON_INNER
+                    goal_msg.epsilon.outer = GRIPPER_EPSILON_OUTER
 
-                goal_handle = goal_future.result()
-                if goal_handle is None or not goal_handle.accepted:
-                    self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
-                    return
+                    goal_future = client.send_goal_async(goal_msg)
+                    self.spin_until_future_complete(node, goal_future)
 
-                result_future = goal_handle.get_result_async()
-                while rclpy.ok() and not result_future.done():
-                    rclpy.spin_once(node, timeout_sec=0.1)
+                    goal_handle = goal_future.result()
+                    if goal_handle is None or not goal_handle.accepted:
+                        self.line_queue.put(f"Gripper {label.lower()} goal was not accepted")
+                        return
 
-                result = result_future.result()
-                if result is not None and result.status == 4:
-                    self.line_queue.put(f"Gripper {label.lower()} succeeded")
-                else:
-                    status = getattr(result, "status", "unknown")
-                    self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
-            finally:
-                if client is not None:
-                    client.destroy()
-                node.destroy_node()
+                    result_future = goal_handle.get_result_async()
+                    self.spin_until_future_complete(node, result_future)
+
+                    result = result_future.result()
+                    if result is not None and result.status == 4:
+                        self.line_queue.put(f"Gripper {label.lower()} succeeded")
+                    else:
+                        status = getattr(result, "status", "unknown")
+                        self.line_queue.put(f"Gripper {label.lower()} finished with status {status}")
+                finally:
+                    if client is not None:
+                        client.destroy()
+                    node.destroy_node()
+                    self.set_gripper_busy(False)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -620,9 +652,11 @@ class FR3TeachRunGUI(tk.Tk):
                 return
             self.line_queue.put(f"Gripper action server ready: {action_name}")
             self.line_queue.put("Starting trajectory playback…")
-            self.run_pg.start(bash_cmd(
+            playback_proc = self.run_pg.start(bash_cmd(
                 f"python3 playback_joint_trajectory.py '{csv_path}'"
             ))
+            self.current_playback_proc = playback_proc
+            threading.Thread(target=self._watch_playback_process, args=(playback_proc,), daemon=True).start()
         threading.Thread(target=delayed_start, daemon=True).start()
 
         self.running = True
@@ -631,9 +665,18 @@ class FR3TeachRunGUI(tk.Tk):
         self._refresh_controls()
         threading.Thread(target=self._watch_run_finish, daemon=True).start()
 
+    def _watch_playback_process(self, playback_proc):
+        playback_proc.wait()
+        self.line_queue.put("Playback process exited; shutting down MoveIt and controllers…")
+        self.run_pg.terminate_all(sig=signal.SIGTERM)
+        time.sleep(0.5)
+        self.run_pg.terminate_all(sig=signal.SIGKILL)
+        self.run_pg.clear_finished()
+
     def _watch_run_finish(self):
         while self.run_pg.is_alive():
             time.sleep(0.5)
+        self.current_playback_proc = None
         self.running = False
         # UI updates must be done in main thread; schedule via after
         self.after(0, lambda: self.btn_run.configure(text="Run Trajectory"))
@@ -657,9 +700,11 @@ class FR3TeachRunGUI(tk.Tk):
         self.gripper_pg.clear_finished()
         self.teaching = False
         self.gravity_mode = False
+        self.current_playback_proc = None
         self.running = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
+        self.current_playback_proc = None
         self.recorded_gripper_events = []
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")

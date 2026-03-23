@@ -1,12 +1,13 @@
 import csv
-import shlex
-import subprocess
 import sys
 import threading
 import time
 
 import rclpy
+from rclpy.action import ActionClient
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from franka_msgs.action import Grasp, Move
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -17,6 +18,7 @@ JOINT_NAMES = [
 TOLERANCE = 0.05  # rad
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
+PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 0.75
@@ -71,6 +73,9 @@ class SmartTrajectoryPlayer(Node):
         self.full_sent = False
         self.start_time_ns = self.get_clock().now().nanoseconds
         self.execution_start_time = None
+        self.execution_complete_timer = None
+        self.stop_requested = False
+        self.gripper_action_lock = threading.Lock()
 
         self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
@@ -161,7 +166,7 @@ class SmartTrajectoryPlayer(Node):
                 self.get_logger().error(
                     "Timeout: Never received a complete joint state sample. Expected one of: " + ", ".join(JOINT_STATES_TOPICS)
                 )
-                rclpy.shutdown()
+                self.request_stop()
             else:
                 self.get_logger().info("Waiting for current joint state on: " + ", ".join(JOINT_STATES_TOPICS))
             return
@@ -173,7 +178,7 @@ class SmartTrajectoryPlayer(Node):
                     "Timeout: No controller subscriber on any trajectory topic. Expected one of: "
                     + ", ".join(TRAJECTORY_TOPICS)
                 )
-                rclpy.shutdown()
+                self.request_stop()
             else:
                 self.get_logger().info(
                     "Waiting for trajectory controller subscriber on: " + ", ".join(TRAJECTORY_TOPICS)
@@ -181,12 +186,13 @@ class SmartTrajectoryPlayer(Node):
             return
 
         self.get_logger().info("Publishing blended trajectory from current pose into recording")
-        trajectory, time_offset = self.build_execution_trajectory()
+        trajectory, time_offset, execution_duration = self.build_execution_trajectory()
         for publisher in ready_publishers:
             publisher.publish(trajectory)
         self.execution_start_time = time.monotonic()
         if self.gripper_events:
             self.schedule_gripper_events(time_offset)
+        self.schedule_shutdown(execution_duration, time_offset)
         self.full_sent = True
         self.timer.cancel()
 
@@ -247,7 +253,23 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
-        return traj, blend_time
+        return traj, blend_time, previous_time
+
+    def schedule_shutdown(self, execution_duration, time_offset):
+        latest_gripper_time = max((event_time for event_time, _ in self.gripper_events), default=0.0)
+        total_runtime = max(execution_duration, time_offset + latest_gripper_time) + PLAYBACK_COMPLETION_BUFFER_SEC
+        self.get_logger().info(f"Playback will auto-exit in {total_runtime:.2f} s after trajectory start")
+        self.execution_complete_timer = self.create_timer(total_runtime, self.finish_execution)
+
+    def request_stop(self):
+        self.stop_requested = True
+
+    def finish_execution(self):
+        if self.execution_complete_timer is not None:
+            self.execution_complete_timer.cancel()
+            self.execution_complete_timer = None
+        self.get_logger().info("Playback complete; shutting down trajectory player")
+        self.request_stop()
 
     def schedule_gripper_events(self, time_offset):
         for event_time, event_name in self.gripper_events:
@@ -261,57 +283,79 @@ class SmartTrajectoryPlayer(Node):
     def run_gripper_event_after_delay(self, delay_sec, event_name):
         time.sleep(max(0.0, delay_sec))
         is_open = event_name == "open"
-        width = GRIPPER_OPEN_WIDTH if is_open else GRIPPER_CLOSE_WIDTH
         action_candidates = GRIPPER_MOVE_ACTION_CANDIDATES if is_open else GRIPPER_GRASP_ACTION_CANDIDATES
-        action_type = "Move" if is_open else "Grasp"
+        action_cls = Move if is_open else Grasp
+
+        with self.gripper_action_lock:
+            try:
+                self.execute_gripper_event(action_cls, action_candidates, event_name)
+            except RuntimeError as exc:
+                self.get_logger().error(str(exc))
+
+    def execute_gripper_event(self, action_cls, action_candidates, event_name):
+        node = rclpy.create_node(f"playback_gripper_client_{event_name}_{int(time.time() * 1000)}")
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        client = None
         try:
-            action_name = self.ensure_gripper_ready(action_candidates)
-        except RuntimeError as exc:
-            self.get_logger().error(str(exc))
-            return
+            action_name, client = self.wait_for_gripper_action(node, action_cls, action_candidates, executor)
+            if action_name is None:
+                raise RuntimeError(
+                    "No gripper action server found for playback. Expected an already-running server on one of: "
+                    f"{', '.join(action_candidates)}"
+                )
 
-        if is_open:
-            goal = shlex.quote(f"{{width: {width}, speed: {GRIPPER_SPEED}}}")
-            cmd = (
-                f"{ROS_SETUP}; "
-                f"ros2 action send_goal {action_name} franka_msgs/action/Move {goal}"
-            )
-        else:
-            goal = shlex.quote(
-                f"{{width: {width}, speed: {GRIPPER_SPEED}, force: {GRIPPER_GRASP_FORCE}, epsilon: {{inner: {GRIPPER_EPSILON_INNER}, outer: {GRIPPER_EPSILON_OUTER}}}}}"
-            )
-            cmd = (
-                f"{ROS_SETUP}; "
-                f"ros2 action send_goal {action_name} franka_msgs/action/Grasp {goal}"
-            )
-        self.get_logger().info(f"Executing recorded gripper event '{event_name}' via {action_name} ({action_type})")
-        subprocess.Popen(["bash", "-lc", cmd])
+            if action_cls is Move:
+                goal_msg = Move.Goal()
+                goal_msg.width = GRIPPER_OPEN_WIDTH
+                goal_msg.speed = GRIPPER_SPEED
+                action_label = "Move"
+            else:
+                goal_msg = Grasp.Goal()
+                goal_msg.width = GRIPPER_CLOSE_WIDTH
+                goal_msg.speed = GRIPPER_SPEED
+                goal_msg.force = GRIPPER_GRASP_FORCE
+                goal_msg.epsilon.inner = GRIPPER_EPSILON_INNER
+                goal_msg.epsilon.outer = GRIPPER_EPSILON_OUTER
+                action_label = "Grasp"
 
-    def ensure_gripper_ready(self, action_candidates):
+            self.get_logger().info(
+                f"Executing recorded gripper event '{event_name}' via {action_name} ({action_label})"
+            )
+            goal_future = client.send_goal_async(goal_msg)
+            self.spin_until_future_complete(executor, goal_future)
+            goal_handle = goal_future.result()
+            if goal_handle is None or not goal_handle.accepted:
+                raise RuntimeError(f"Recorded gripper event '{event_name}' was not accepted by {action_name}")
+
+            result_future = goal_handle.get_result_async()
+            self.spin_until_future_complete(executor, result_future)
+            result = result_future.result()
+            status = getattr(result, 'status', 'unknown')
+            self.get_logger().info(
+                f"Recorded gripper event '{event_name}' finished with status {status}"
+            )
+        finally:
+            if client is not None:
+                client.destroy()
+            executor.remove_node(node)
+            node.destroy_node()
+
+    def wait_for_gripper_action(self, node, action_cls, action_candidates, executor):
         deadline = time.monotonic() + GRIPPER_ACTION_WAIT_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            action_name = self.find_gripper_action(action_candidates)
-            if action_name is not None:
-                return action_name
-            time.sleep(0.25)
+            for candidate in action_candidates:
+                client = ActionClient(node, action_cls, candidate)
+                if client.wait_for_server(timeout_sec=0.5):
+                    return candidate, client
+                client.destroy()
+            executor.spin_once(timeout_sec=0.1)
+            time.sleep(0.1)
+        return None, None
 
-        raise RuntimeError(
-            "No gripper action server found for playback. Expected an already-running server on one of: "
-            f"{', '.join(action_candidates)}"
-        )
-
-    def find_gripper_action(self, action_candidates):
-        result = subprocess.run(
-            ["bash", "-lc", f"{ROS_SETUP}; ros2 action list"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        action_names = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-        for candidate in action_candidates:
-            if candidate in action_names:
-                return candidate
-        return None
+    def spin_until_future_complete(self, executor, future, timeout_sec: float = 0.1):
+        while rclpy.ok() and not future.done():
+            executor.spin_once(timeout_sec=timeout_sec)
 
     def compute_blend_time(self, max_error):
         if max_error <= TOLERANCE:
@@ -330,15 +374,21 @@ def main(args=None):
     if len(sys.argv) < 2:
         print("Usage: playback_joint_trajectory_smart.py <trajectory.csv>")
         return
+
     node = SmartTrajectoryPlayer(sys.argv[1])
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not node.stop_requested:
+            executor.spin_once(timeout_sec=0.1)
         print("Executed")
     except KeyboardInterrupt:
         pass
     finally:
+        executor.remove_node(node)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
         print("Shutdown")
 
 
