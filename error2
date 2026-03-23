@@ -1,69 +1,110 @@
-7 for command interface cartesian_pose_command with index 7
-[ros2_control_node-2] [INFO] [1774297955.625800416] [FrankaHardwareInterface]: Registering command interface: 8 for command interface cartesian_pose_command with index 8
-[ros2_control_node-2] [INFO] [1774297955.625802904] [FrankaHardwareInterface]: Registering command interface: 9 for command interface cartesian_pose_command with index 9
-[ros2_control_node-2] [INFO] [1774297955.625805450] [FrankaHardwareInterface]: Registering command interface: 10 for command interface cartesian_pose_command with index 10
-[ros2_control_node-2] [INFO] [1774297955.625808084] [FrankaHardwareInterface]: Registering command interface: 11 for command interface cartesian_pose_command with index 11
-[ros2_control_node-2] [INFO] [1774297955.625810816] [FrankaHardwareInterface]: Registering command interface: 12 for command interface cartesian_pose_command with index 12
-[ros2_control_node-2] [INFO] [1774297955.625813340] [FrankaHardwareInterface]: Registering command interface: 13 for command interface cartesian_pose_command with index 13
-[ros2_control_node-2] [INFO] [1774297955.625815855] [FrankaHardwareInterface]: Registering command interface: 14 for command interface cartesian_pose_command with index 14
-[ros2_control_node-2] [INFO] [1774297955.625818456] [FrankaHardwareInterface]: Registering command interface: 15 for command interface cartesian_pose_command with index 15
-[ros2_control_node-2] [INFO] [1774297955.625821093] [FrankaHardwareInterface]: Registering command interface: joint_3_position for command interface elbow_command with index 0
-[ros2_control_node-2] [INFO] [1774297955.625823807] [FrankaHardwareInterface]: Registering command interface: joint_4_sign for command interface elbow_command with index 1
-[ros2_control_node-2] [INFO] [1774297955.625883449] [resource_manager]: 'configure' hardware 'FrankaHardwareInterface' 
-[ros2_control_node-2] [INFO] [1774297955.625889714] [resource_manager]: Successful 'configure' of hardware 'FrankaHardwareInterface'
-[ros2_control_node-2] [INFO] [1774297955.625899791] [resource_manager]: 'activate' hardware 'FrankaHardwareInterface' 
-[ros2_control_node-2] [INFO] [1774297955.626155263] [FrankaHardwareInterface]: Started
-[ros2_control_node-2] [INFO] [1774297955.626167834] [resource_manager]: Successful 'activate' of hardware 'FrankaHardwareInterface'
-[ros2_control_node-2] [WARN] [1774297955.630577971] [NS_1.controller_manager]: Unable to lock the memory: 'No proper privileges to lock the memory!'
-[ros2_control_node-2] [INFO] [1774297955.630607805] [NS_1.controller_manager]: update rate is 1000 Hz
-[ros2_control_node-2] [INFO] [1774297955.630613850] [NS_1.controller_manager]: Spawning controller_manager RT thread with scheduler priority: 98
-[ros2_control_node-2] [INFO] [1774297955.630678777] [NS_1.controller_manager]: Successful set up FIFO RT scheduling policy with priority 98.
-[ros2_control_node-2] [INFO] [1774297955.787566301] [NS_1.controller_manager]: Loading controller 'joint_state_broadcaster'
-[ros2_control_node-2] [INFO] [1774297955.806076762] [NS_1.controller_manager]: Loading controller 'gravity_compensation_example_controller'
-[spawner-4] [INFO] [1774297955.806974991] [NS_1.spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
-[ros2_control_node-2] [INFO] [1774297955.815531690] [NS_1.controller_manager]: Configuring controller 'joint_state_broadcaster'
-[ros2_control_node-2] [INFO] [1774297955.815662224] [NS_1.joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
-[spawner-5] [INFO] [1774297955.817451296] [NS_1.spawner_gravity_compensation_example_controller]: [94mLoaded [1mgravity_compensation_example_controller[0m
-[ros2_control_node-2] [INFO] [1774297955.820876062] [NS_1.controller_manager]: Configuring controller 'gravity_compensation_example_controller'
-[spawner-4] [INFO] [1774297955.824419264] [NS_1.spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
-[spawner-5] [INFO] [1774297955.828207768] [NS_1.spawner_gravity_compensation_example_controller]: [92mConfigured and activated [1mgravity_compensation_example_controller[0m
-[INFO] [spawner-5]: process has finished cleanly [pid 15144]
-[INFO] [spawner-4]: process has finished cleanly [pid 15142]
-Stopping gravity compensation...
-[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
-[INFO] [franka_gripper_node-6]: sending signal 'SIGINT' to process[franka_gripper_node-6]
-[INFO] [joint_state_publisher-3]: sending signal 'SIGINT' to process[joint_state_publisher-3]
-[INFO] [ros2_control_node-2]: sending signal 'SIGINT' to process[ros2_control_node-2]
-[INFO] [robot_state_publisher-1]: sending signal 'SIGINT' to process[robot_state_publisher-1]
-[ros2_control_node-2] [INFO] [1774297964.120154183] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[ros2_control_node-2] [INFO] [1774297964.120234608] [NS_1.controller_manager]: Shutdown request received....
-[ros2_control_node-2] [INFO] [1774297964.120276728] [NS_1.controller_manager]: Shutting down all controllers in the controller manager.
-[ros2_control_node-2] [INFO] [1774297964.120294210] [NS_1.controller_manager]: Deactivating controller 'joint_state_broadcaster'
-[ros2_control_node-2] [INFO] [1774297964.120327508] [NS_1.controller_manager]: Shutting down controller 'joint_state_broadcaster'
-[ros2_control_node-2] [INFO] [1774297964.120351328] [NS_1.controller_manager]: Deactivating controller 'gravity_compensation_example_controller'
-[ros2_control_node-2] [INFO] [1774297964.120371766] [NS_1.controller_manager]: Shutting down controller 'gravity_compensation_example_controller'
-[franka_gripper_node-6] [INFO] [1774297964.120166198] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[robot_state_publisher-1] [INFO] [1774297964.120199250] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[ros2_control_node-2] [INFO] [1774297964.121200562] [resource_manager]: 'deactivate' hardware 'FrankaHardwareInterface' 
-[ros2_control_node-2] [INFO] [1774297964.121227045] [FrankaHardwareInterface]: trying to Stop...
-[ros2_control_node-2] [INFO] [1774297964.123366269] [FrankaHardwareInterface]: Stopped
-[ros2_control_node-2] [INFO] [1774297964.123410135] [resource_manager]: Successful 'deactivate' of hardware 'FrankaHardwareInterface'
-[ros2_control_node-2] [INFO] [1774297964.123415507] [resource_manager]: 'shutdown' hardware 'FrankaHardwareInterface' 
-[ros2_control_node-2] [INFO] [1774297964.123419349] [resource_manager]: Successful 'shutdown' of hardware 'FrankaHardwareInterface'
-[ros2_control_node-2] [INFO] [1774297964.123425336] [NS_1.controller_manager]: Shutting down the controller manager.
-[franka_gripper_node-6] [INFO] [1774297964.124085235] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[robot_state_publisher-1] [INFO] [1774297964.126497893] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[ros2_control_node-2] [INFO] [1774297964.126561538] [rclcpp]: signal_handler(SIGINT/SIGTERM)
-[joint_state_publisher-3] Traceback (most recent call last):
-[joint_state_publisher-3]   File "/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher", line 33, in <module>
-[joint_state_publisher-3]     sys.exit(load_entry_point('joint-state-publisher==2.4.0', 'console_scripts', 'joint_state_publisher')())
-[joint_state_publisher-3]   File "/opt/ros/humble/lib/python3.10/site-packages/joint_state_publisher/joint_state_publisher.py", line 470, in main
-[joint_state_publisher-3]     jsp.destroy_node()
-[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1696, in destroy_node
-[joint_state_publisher-3]     self.__node.destroy_when_not_in_use()
-[joint_state_publisher-3] KeyboardInterrupt
-[ERROR] [joint_state_publisher-3]: process has died [pid 15140, exit code -2, cmd '/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher --ros-args -r __node:=joint_state_publisher -r __ns:=/NS_1 --params-file /tmp/launch_params_b2bs9ak4'].
-[INFO] [robot_state_publisher-1]: process has finished cleanly [pid 15136]
-[INFO] [ros2_control_node-2]: process has finished cleanly [pid 15138]
-[INFO] [franka_gripper_node-6]: process has finished cleanly [pid 15146]
-[exit 15117] code=-2
+[ros2_control_node-4] [INFO] [1774298461.960287377] [NS_1.fr3_arm_controller]: Action status changes will be monitored at 20.00 Hz.
+[ros2-9] [INFO] [1774298461.964851580] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[ros2_control_node-4] [INFO] [1774298461.968817359] [NS_1.controller_manager]: Configuring controller 'joint_state_broadcaster'
+[ros2_control_node-4] [INFO] [1774298461.968902947] [NS_1.joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[ros2-8] [INFO] [1774298461.976250522] [spawner_fr3_arm_controller]: [92mConfigured and activated [1mfr3_arm_controller[0m
+[ros2-9] [INFO] [1774298461.977892645] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-6]: process has finished cleanly [pid 16114]
+[INFO] [ros2-8]: process has finished cleanly [pid 16118]
+[INFO] [ros2-9]: process has finished cleanly [pid 16120]
+Ensuring gripper action server is ready after MoveIt startup...
+[rviz2-1] [INFO] [1774298463.401155645] [rviz2]: Stereo is NOT SUPPORTED
+[rviz2-1] [INFO] [1774298463.401338921] [rviz2]: OpenGl version: 4.5 (GLSL 4.5)
+[rviz2-1] [INFO] [1774298463.573299194] [rviz2]: Stereo is NOT SUPPORTED
+[rviz2-1] Warning: class_loader.impl: SEVERE WARNING!!! A namespace collision has occurred with plugin factory for class rviz_default_plugins::displays::InteractiveMarkerDisplay. New factory will OVERWRITE existing one. This situation occurs when libraries containing plugins are directly linked against an executable (the one running right now generating this message). Please separate plugins out into their own library or just don't link against the library and use either class_loader::ClassLoader/MultiLibraryClassLoader to open.
+[rviz2-1]          at line 253 in /opt/ros/humble/include/class_loader/class_loader/class_loader_core.hpp
+[rviz2-1] [INFO] [1774298463.677888045] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.022987 seconds
+[rviz2-1] [INFO] [1774298463.677938575] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+Gripper action server ready: /NS_1/franka_gripper/move
+Starting trajectory playback…
+[INFO] [1774298464.889897377] [smart_trajectory_player]: Loaded 2665 joint points, publishing 2642 smoothed points
+[INFO] [1774298464.890269227] [smart_trajectory_player]: Loaded 2 gripper event(s)
+[INFO] [1774298465.391038767] [smart_trajectory_player]: Publishing blended trajectory from current pose into recording
+[INFO] [1774298465.391592899] [smart_trajectory_player]: Current pose differs from trajectory start by 0.303 rad; blending over 0.86 s
+[INFO] [1774298465.463808795] [smart_trajectory_player]: Playback will auto-exit in 91.69 s after trajectory start
+[rviz2-1] [ERROR] [1774298467.158937215] [moveit_ros_visualization.motion_planning_frame]: Action server: /recognize_objects not available
+[rviz2-1] [INFO] [1774298467.405505005] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.00179493 seconds
+[rviz2-1] [INFO] [1774298467.405551122] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+[rviz2-1] [INFO] [1774298468.496539364] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
+[rviz2-1] [INFO] [1774298468.498229008] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/monitored_planning_scene'
+[rviz2-1] [INFO] [1774298473.502423406] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Failed to call service get_planning_scene, have you launched move_group or called psm.providePlanningSceneService()?
+[INFO] [1774298487.507698577] [smart_trajectory_player]: Executing recorded gripper event 'close' via /NS_1/franka_gripper/grasp (Grasp)
+[franka_gripper_node-7] [INFO] [1774298487.511523806] [NS_1.franka_gripper]: Received Grasping request
+[franka_gripper_node-7] [INFO] [1774298487.512222831] [NS_1.franka_gripper]: Gripper Grasping...
+[franka_gripper_node-7] [INFO] [1774298489.491571566] [NS_1.franka_gripper]: Gripper Grasping succeeded
+[INFO] [1774298489.493764756] [smart_trajectory_player]: Recorded gripper event 'close' finished with status 4
+[ros2_control_node-4] terminate called after throwing an instance of 'franka::ControlException'
+[ros2_control_node-4]   what():  libfranka: Move command aborted: motion aborted by reflex! ["communication_constraints_violation"]
+[ros2_control_node-4] Stack trace (most recent call last) in thread 16187:
+[ros2_control_node-4] #19   Object "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", at 0xffffffffffffffff, in 
+[ros2_control_node-4] #18   Source "../sysdeps/unix/sysv/linux/x86_64/clone3.S", line 81, in __clone3 [0x7aa67b3228cf]
+[ros2_control_node-4] #17   Source "./nptl/pthread_create.c", line 442, in start_thread [0x7aa67b290ac2]
+[ros2_control_node-4] #16   Object "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30", at 0x7aa67b521252, in 
+[ros2_control_node-4] #15   Object "/opt/ros/humble/lib/controller_manager/ros2_control_node", at 0x57fbf79302bd, in 
+[ros2_control_node-4] #14   Object "/opt/ros/humble/lib/libcontroller_manager.so", at 0x7aa67b95c574, in controller_manager::ControllerManager::read(rclcpp::Time const&, rclcpp::Duration const&)
+[ros2_control_node-4] #13   Object "/opt/ros/humble/lib/libhardware_interface.so", at 0x7aa67b0fac7c, in hardware_interface::ResourceManager::read(rclcpp::Time const&, rclcpp::Duration const&)
+[ros2_control_node-4] #12   Object "/opt/ros/humble/lib/libhardware_interface.so", at 0x7aa67b1184cf, in hardware_interface::System::read(rclcpp::Time const&, rclcpp::Duration const&)
+[ros2_control_node-4] #11   Object "/home/parc/franka_ws/build/franka_hardware/libfranka_hardware.so", at 0x7aa65ff1a236, in franka_hardware::FrankaHardwareInterface::read(rclcpp::Time const&, rclcpp::Duration const&)
+[ros2_control_node-4] #10   Object "/home/parc/franka_ws/build/franka_hardware/libfranka_hardware.so", at 0x7aa65ff89c54, in franka_hardware::Robot::readOnce()
+[ros2_control_node-4] #9    Object "/home/parc/franka_ws/build/franka_hardware/libfranka_hardware.so", at 0x7aa65ff8b657, in franka_hardware::Robot::readOnceActiveControl()
+[ros2_control_node-4] #8    Object "/home/parc/franka_ws/install/libfranka/lib/libfranka.so.0.15.0", at 0x7aa65fc25a87, in franka::ActiveControl::readOnce()
+[ros2_control_node-4] #7    Object "/home/parc/franka_ws/install/libfranka/lib/libfranka.so.0.15.0", at 0x7aa65fc22f02, in franka::Robot::Impl::throwOnMotionError(franka::RobotState const&, unsigned int) [clone .cold]
+[ros2_control_node-4] #6    Object "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30", at 0x7aa67b4f34d7, in __cxa_throw
+[ros2_control_node-4] #5    Object "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30", at 0x7aa67b4f3276, in std::terminate()
+[ros2_control_node-4] #4    Object "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30", at 0x7aa67b4f320b, in 
+[ros2_control_node-4] #3    Object "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30", at 0x7aa67b4e7b9d, in 
+[ros2_control_node-4] #2    Source "./stdlib/abort.c", line 79, in abort [0x7aa67b2247f2]
+[ros2_control_node-4] #1    Source "../sysdeps/posix/raise.c", line 26, in raise [0x7aa67b23e475]
+[ros2_control_node-4] #0  | Source "./nptl/pthread_kill.c", line 89, in __pthread_kill_internal
+[ros2_control_node-4]     | Source "./nptl/pthread_kill.c", line 78, in __pthread_kill_implementation
+[ros2_control_node-4]       Source "./nptl/pthread_kill.c", line 44, in __pthread_kill [0x7aa67b2929fc]
+[ros2_control_node-4] Aborted (Signal sent by tkill() 16110 1000)
+[ERROR] [ros2_control_node-4]: process has died [pid 16110, exit code -6, cmd '/opt/ros/humble/lib/controller_manager/ros2_control_node --ros-args -r __ns:=/NS_1 --params-file /tmp/launch_params_ewlzyyhz --params-file /home/parc/franka_ws/install/franka_fr3_moveit_config/share/franka_fr3_moveit_config/config/fr3_ros_controllers.yaml -r joint_states:=franka/joint_states'].
+[INFO] [launch]: process[ros2_control_node-4] was required: shutting down launched system
+[INFO] [franka_gripper_node-7]: sending signal 'SIGINT' to process[franka_gripper_node-7]
+[INFO] [joint_state_publisher-5]: sending signal 'SIGINT' to process[joint_state_publisher-5]
+[INFO] [move_group-3]: sending signal 'SIGINT' to process[move_group-3]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [rviz2-1]: sending signal 'SIGINT' to process[rviz2-1]
+[franka_gripper_node-7] [INFO] [1774298543.011687561] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[move_group-3] [INFO] [1774298543.013370466] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-2] [INFO] [1774298543.014651235] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[rviz2-1] [INFO] [1774298543.016003416] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[move_group-3] [INFO] [1774298543.028159035] [moveit.ros_planning_interface.moveit_cpp]: Deleting MoveItCpp
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 16106]
+[INFO] [joint_state_publisher-5]: process has finished cleanly [pid 16112]
+[INFO] [franka_gripper_node-7]: process has finished cleanly [pid 16116]
+[move_group-3] [INFO] [1774298543.264644071] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopped publishing maintained planning scene.
+[move_group-3] [INFO] [1774298543.265894700] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopping world geometry monitor
+[move_group-3] [INFO] [1774298543.266550149] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopping planning scene monitor
+[move_group-3] Warning: class_loader.ClassLoader: SEVERE WARNING!!! Attempting to unload library while objects created by this loader exist in the heap! You should delete your objects before attempting to unload the library or destroying the ClassLoader. The library will NOT be unloaded.
+[move_group-3]          at line 127 in ./src/class_loader.cpp
+[move_group-3] Stack trace (most recent call last):
+[move_group-3] #16   Object "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", at 0xffffffffffffffff, in 
+[move_group-3] #15   Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x6032ea1dc724, in 
+[move_group-3] #14   Source "../csu/libc-start.c", line 392, in __libc_start_main_impl [0x7f85101c6e3f]
+[move_group-3] #13   Source "../sysdeps/nptl/libc_start_call_main.h", line 58, in __libc_start_call_main [0x7f85101c6d8f]
+[move_group-3] #12   Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x6032ea1db65b, in 
+[move_group-3] #11   Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x6032ea1dd709, in 
+[move_group-3] #10   Object "/opt/ros/humble/lib/libmoveit_cpp.so.2.5.9", at 0x7f8510b3b876, in moveit_cpp::MoveItCpp::~MoveItCpp()
+[move_group-3] #9    Object "/opt/ros/humble/lib/libmoveit_cpp.so.2.5.9", at 0x7f8510b39ba9, in 
+[move_group-3] #8    Object "/opt/ros/humble/lib/libmoveit_trajectory_execution_manager.so.2.5.9", at 0x7f850febe495, in trajectory_execution_manager::TrajectoryExecutionManager::~TrajectoryExecutionManager()
+[move_group-3] #7    Object "/opt/ros/humble/lib/libmoveit_trajectory_execution_manager.so.2.5.9", at 0x7f850fed13a9, in 
+[move_group-3] #6    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f851079bebc, in rclcpp::Node::~Node()
+[move_group-3] #5    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f851079be5e, in rclcpp::Node::~Node()
+[move_group-3] #4    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f8510776f59, in 
+[move_group-3] #3    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f85107a5509, in 
+[move_group-3] #2    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f85107a5450, in rclcpp::node_interfaces::NodeBase::~NodeBase()
+[move_group-3] #1    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f8510776f59, in 
+[move_group-3] #0    Object "/opt/ros/humble/lib/librclcpp.so", at 0x7f851077bdd1, in rclcpp::CallbackGroup::~CallbackGroup()
+[move_group-3] Segmentation fault (Address not mapped to object [0x7f8501067798])
+[ERROR] [rviz2-1]: process has died [pid 16104, exit code -11, cmd '/opt/ros/humble/lib/rviz2/rviz2 -d /home/parc/franka_ws/install/franka_fr3_moveit_config/share/franka_fr3_moveit_config/rviz/moveit.rviz --ros-args -r __node:=rviz2 --params-file /tmp/launch_params_zq55238g --params-file /tmp/launch_params_j13w0bsc --params-file /tmp/launch_params_j9oll6op --params-file /tmp/launch_params_h8wh8rbc'].
+[ERROR] [move_group-3]: process has died [pid 16108, exit code -11, cmd '/opt/ros/humble/lib/moveit_ros_move_group/move_group --ros-args -r __ns:=/NS_1 --params-file /tmp/launch_params_vyb8xan6 --params-file /tmp/launch_params_d33ccwth --params-file /tmp/launch_params_3mzfwsku --params-file /tmp/launch_params_eee59kgi --params-file /tmp/launch_params_jlk6sqk_ --params-file /tmp/launch_params_qpqxwvwp --params-file /tmp/launch_params_eebgeib4'].
+[move_group-3] [0m
+[exit 16081] code=0
+[ERROR] [1774298552.832289929] [smart_trajectory_player]: No gripper action server found for playback. Expected an already-running server on one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+[INFO] [1774298557.159320428] [smart_trajectory_player]: Playback complete; shutting down trajectory player
+Executed
+Shutdown
+Playback process exited; shutting down MoveIt and controllers…
+[exit 16296] code=0
