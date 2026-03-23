@@ -1,51 +1,104 @@
 # franka_kinesthetic_teaching_GUI
 
-A Tkinter-based GUI for kinesthetic teaching and trajectory playback on the Franka Research 3 (FR3) using ROS 2.
+A small Tkinter desktop application for kinesthetic teaching and trajectory playback on a Franka Research 3 (FR3) with ROS 2.
 
 ## What this repo does
 
-This repo provides a small desktop GUI for two tasks:
-- Teach a motion by moving the robot by hand while joint states are recorded to CSV.
-- Replay a recorded trajectory through the FR3 joint trajectory controller.
+This repo contains one main application: a GUI that manages two workflows:
+- teach a motion by moving the robot by hand while joint states are recorded to CSV
+- replay a recorded trajectory through the FR3 joint trajectory controller
 
-The GUI launches the underlying ROS 2 processes for recording and playback and shows their console output in one window.
+The GUI also provides manual gripper buttons and a dedicated gravity-compensation mode.
+
+## Main application
+
+The main application is [`franka_teach_run_gui_v2.py`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach_run_gui_v2.py). It is launched by [`run_gui.sh`](/home/parc/franka_kinesthetic_teaching_GUI/run_gui.sh), which sources ROS and then runs the Tkinter app.
+
+The GUI exposes these actions:
+- `Start Teach (Record)`
+- `Start Gravity Mode`
+- `Open Gripper`
+- `Close Gripper`
+- `Run Trajectory`
+- `Kill`
 
 ## Repo contents
 
-- `franka_teach_run_gui_v2.py`: Tkinter GUI that launches gravity mode, teach, gripper, and run workflows.
-- `record_joint_trajectory.py`: Records joint states to a CSV file.
-- `playback_joint_trajectory.py`: Loads a CSV, smooths it for playback, blends from the current robot pose, republishes the joint trajectory, and replays recorded gripper events.
-- `run_gui.sh`: Convenience launcher for the GUI.
+- `franka_teach_run_gui_v2.py`: Tkinter GUI for teach, gravity, gripper, and playback workflows
+- `run_gui.sh`: convenience launcher for the GUI
+- `franka_teach_minimal.launch.py`: reduced teach/gravity launch used by the GUI
+- `franka_teach.config.yaml`: robot config passed into the minimal teach launch
+- `record_joint_trajectory.py`: records joint states to CSV
+- `playback_joint_trajectory.py`: loads a CSV, smooths it, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
+
+## How the GUI uses the launch files
+
+### Minimal teach launch
+
+[`franka_teach_minimal.launch.py`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach_minimal.launch.py) is used by the GUI for:
+- `Start Teach (Record)`
+- `Start Gravity Mode`
+
+It brings up:
+- `robot_state_publisher`
+- `controller_manager` / `ros2_control_node`
+- `joint_state_publisher`
+- `joint_state_broadcaster`
+- `gravity_compensation_example_controller`
+- the Franka gripper launch, if `load_gripper` is enabled
+
+It does not bring up the full MoveIt playback stack.
+
+The teach config currently used by the GUI is [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml), which sets:
+- namespace `NS_1`
+- `arm_id: fr3`
+- `robot_ip: 172.16.0.2`
+- `load_gripper: "true"`
+- `use_fake_hardware: "false"`
+
+### Playback launch
+
+When you click `Run Trajectory`, the GUI launches:
+- `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1`
+
+After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py) on the selected CSV.
 
 ## Features
 
 ### Teach mode
-- Can launch the gravity compensation example controller automatically if it is not already running.
-- Records joint motion while the arm is moved by hand.
-- Records GUI gripper button presses as timestamped `open` and `close` events and appends them to the CSV when teach mode stops.
-- Prompts for an optional custom CSV filename before recording starts.
-- Falls back to the default timestamped CSV name if no custom name is provided.
-- Starts teach/gravity mode with the Franka gripper loaded in the same bringup stack, so manual gripper actions do not start a second robot connection while the arm is in gravity compensation.
-- Uses a reduced teach-specific launch that omits `franka_robot_state_broadcaster` to lower realtime pressure during gravity compensation.
+
+- Starts the minimal teach/gravity launch automatically if it is not already running
+- Records joint motion while the arm is moved by hand
+- Prompts for an optional CSV filename before recording starts
+- Uses a timestamped filename if you leave the prompt blank
+- Records GUI gripper button presses as timestamped `open` and `close` events
+- Appends those gripper events to the CSV when teach mode stops
+- Uses the already-running gripper action server from the teach/gravity stack
+- Avoids a separate gripper connection while arm control is active
 
 ### Gravity mode
-- Provides a dedicated button to start or stop gravity compensation independently from recording.
-- Lets you put the robot into gravity compensation without starting the recorder.
-- Exposes the gripper action server from the same bringup stack used for gravity compensation.
+
+- Starts the same minimal teach/gravity launch without starting the recorder
+- Lets you put the arm into gravity compensation independently from recording
+- Exposes the gripper action server from the same bringup stack
 
 ### GUI gripper buttons
-- `Open Gripper` and `Close Gripper` are one-shot commands.
-- During teach/gravity mode, each button uses the already-running gripper action server from the active bringup stack.
-- Outside teach/gravity mode, each button starts the standalone gripper ROS node, sends the command, and then shuts that node down again.
-- This is intended to release the gripper connection after each manual command so Franka Desk can regain control.
+
+- `Open Gripper` sends a Franka `Move` action
+- `Close Gripper` sends a Franka `Grasp` action
+- During teach/gravity mode, the GUI uses the gripper action server from the already-running teach stack
+- Outside teach/gravity mode, the GUI starts a standalone `franka_gripper` launch, sends the command, then shuts it down again
+- The GUI refuses to start a second gripper node while teach/gravity arm control is active but no gripper action server is available
 
 ### Run mode
-- Lets you choose a saved CSV trajectory from the GUI.
-- Launches the FR3 MoveIt/controller stack.
-- Waits for joint state feedback and a trajectory-controller subscriber before publishing.
-- Smooths recorded waypoints during playback to reduce vibration.
-- Blends from the robot's current joint pose into the recorded trajectory start instead of issuing a separate hard jump to the first point.
-- Replays recorded gripper events from the CSV during trajectory execution when matching action servers are available.
+
+- Lets you choose a saved CSV from the GUI
+- Launches the FR3 MoveIt/controller stack
+- Waits for a gripper action server before starting playback
+- The playback node waits for joint state feedback and a trajectory-controller subscriber before publishing
+- Smooths recorded waypoints during playback
+- Blends from the robot's current joint pose into the recorded trajectory start when needed
+- Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
 
 ## Requirements
 
@@ -53,26 +106,20 @@ The GUI launches the underlying ROS 2 processes for recording and playback and s
 - `franka_ros2` packages installed and configured
 - Python 3
 - Tkinter for Python: `sudo apt install python3-tk`
-- A working FR3 setup with FCI enabled and the robot reachable on your network
+- A working FR3 setup with FCI enabled and reachable on your network
 
 ## Configuration
 
-The main user-editable settings are in [`franka_teach_run_gui_v2.py`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach_run_gui_v2.py):
+Main user-editable settings live in [`franka_teach_run_gui_v2.py`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach_run_gui_v2.py):
+- `ROS_SETUP`
+- `ROBOT_IP`
+- `TEACH_NAMESPACE`
 
-- `ROS_SETUP`: shell command used to source your ROS environment
-- `ROBOT_IP`: IP address passed to the FR3 launch command
+Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml).
 
-Playback-specific constants such as smoothing, blend timing, and gripper action names live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
-
-Update those values for your machine before running the GUI.
+Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
 
 ## Running
-
-1. Make sure the robot is powered, reachable, and joints are unlocked.
-2. Make sure FCI mode is active.
-3. Open a terminal.
-4. Change into this repo.
-5. Start the GUI.
 
 ```bash
 cd ~/franka_kinesthetic_teaching_GUI
@@ -85,117 +132,98 @@ cd ~/franka_kinesthetic_teaching_GUI
 
 1. Optionally click `Start Gravity Mode` if you want gravity compensation without recording yet.
 2. Click `Start Teach (Record)`.
-3. Optionally enter a custom CSV filename, or leave the prompt blank to use the default timestamped name.
-4. Wait for gravity compensation to come up if it is not already active.
+3. Optionally enter a custom CSV filename, or leave it blank for a timestamped default.
+4. Wait for the minimal teach/gravity bringup to become active if it is not already running.
 5. Move the arm by hand to demonstrate the motion.
-6. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions captured in the recording.
+6. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions recorded.
 7. Click `Stop Teach (Save)`.
-8. The recording is written in the repo directory using either your custom name or a default name like `joint_trajectory_YYYYMMDD_HHMMSS.csv`.
 
 ### Play back a trajectory
 
 1. Click `Run Trajectory`.
 2. Choose a previously recorded CSV.
 3. The GUI launches the FR3 MoveIt/controller stack.
-4. The playback node waits for valid joint states and for the FR3 joint trajectory controller to subscribe.
-5. The playback node publishes one full trajectory that:
-   - starts from the robot's current joint pose,
-   - blends into the recorded start pose,
-   - then follows the smoothed recorded trajectory.
-6. If the CSV contains `gripper` rows, playback schedules those `open` and `close` events during the replay.
+4. The GUI waits for a gripper action server.
+5. The playback node waits for valid joint states and an active trajectory-controller subscriber.
+6. Playback publishes segmented trajectories that blend from the current pose into the recording when needed.
+7. If the CSV contains `gripper` rows, playback pauses between arm segments and executes those recorded `open` and `close` events.
 
 ## Recorded CSV format
 
-The recorder writes a mixed event format with this header:
+The recorder writes this header:
 
 `timestamp_ns,row_type,event,joint_1,joint_2,joint_3,joint_4,joint_5,joint_6,joint_7`
 
 Joint samples are stored as:
 - `row_type = joint`
 - `event =` empty
-- `joint_1` through `joint_7` filled with recorded joint positions
+- `joint_1` through `joint_7` filled with the received joint positions
 
 Recorded GUI gripper actions are stored as:
 - `row_type = gripper`
 - `event = open` or `close`
-- Joint columns left empty
+- joint columns left empty
 
-The file is written exactly as recorded. Playback smoothing is applied in memory at replay time and does not modify the CSV.
-
-If no filename is provided when recording starts, the recorder saves to the default format:
+If you provide no filename when recording starts, the recorder uses:
 - `joint_trajectory_YYYYMMDD_HHMMSS.csv`
 
-## Playback smoothing and blending
+## Playback behavior
 
-The current playback behavior is implemented in `playback_joint_trajectory.py`.
+The current playback behavior is implemented in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
 
-### Smoothing behavior
-- A moving average is applied across neighboring samples with `SMOOTHING_WINDOW = 5`.
-- Waypoints closer together than `MIN_POINT_DT = 0.03` seconds are skipped during playback.
-- The replayed trajectory computes waypoint velocities from neighboring points before publishing to the controller.
+### Smoothing and downsampling
 
-### Startup behavior
-- Playback does not send a separate one-point “move to start” command anymore.
-- Instead, it waits for a complete joint-state message and an active subscriber on the trajectory topic.
-- It then generates a blended prefix from the robot's current pose to the recorded start pose.
-- This avoids the previous failure mode where playback could get stuck waiting at the start.
-- This also avoids a hard jump from the previous final pose back to the first recorded waypoint.
+- A moving average is applied with `SMOOTHING_WINDOW = 5`
+- Waypoints closer together than `MIN_POINT_DT = 0.03` seconds are skipped
+- Published trajectory points include velocities computed from neighboring points
 
-### Gripper playback behavior
-- Playback reads `gripper` rows from the CSV and schedules them relative to the replayed trajectory timing.
-- `open` events are sent through the Franka gripper `Move` action.
-- `close` events are sent through the Franka gripper `Grasp` action.
-- Playback expects the MoveIt launch to have already started the gripper action server.
+### Blend-in behavior
+
+- Playback waits for a complete joint-state sample before publishing
+- Playback also waits for at least one subscriber on a trajectory topic
+- If the current pose is farther than `TOLERANCE = 0.05` rad from the recorded start, the player inserts a blend-in segment
+- Blend duration is bounded by:
+  `MIN_BLEND_TIME_SEC = 0.75`
+  `MAX_BLEND_TIME_SEC = 6.0`
+  `BLEND_SPEED_RAD_PER_SEC = 0.35`
+
+### Gripper replay behavior
+
+- Playback reads `gripper` rows from the CSV and inserts them into the replay timeline
+- `open` events use the Franka gripper `Move` action
+- `close` events use the Franka gripper `Grasp` action
+- The arm trajectory is intentionally held while each gripper event executes
+- Playback expects an already-running gripper action server, typically from the MoveIt launch started by the GUI
 
 ## Topics used by this repo
 
 ### Playback
+
 - Publishes: `/NS_1/fr3_arm_controller/joint_trajectory` and `/fr3_arm_controller/joint_trajectory`
 - Subscribes: `/NS_1/joint_states` and `/joint_states`
 
 ### Recording
+
 - Subscribes: `/NS_1/joint_states`
 
 ### Manual GUI gripper commands
-- Use the Franka gripper ROS action servers under `/<namespace>/franka_gripper/...` when available.
 
-Note: if your FR3 setup publishes joint states or gripper actions on different topics or namespaces, update the scripts accordingly.
+- Uses Franka gripper action servers under the namespace candidates checked by the GUI and playback scripts:
+  `/franka_gripper/...`
+  `/NS_1/franka_gripper/...`
+  `/fr3_gripper/...`
+  `/NS_1/fr3_gripper/...`
 
 ## Known assumptions and caveats
 
-- The playback script expects the FR3 joint names `fr3_joint1` through `fr3_joint7`.
-- The recorder currently stores `msg.position` as received; it assumes the incoming joint order matches the robot joints you want to replay.
-- The GUI uses fixed startup delays for some launched processes. On slow systems, ROS stack startup may still take longer.
-- CSV files are saved into the repo working directory by default unless you pass a path as the custom recording name.
-- The teach button's filename prompt is optional; leaving it blank keeps the timestamp-based behavior.
-- Playback can still trigger a Franka reflex stop such as `power_limit_violation` if the current pose is too far from the recorded start, the path is too aggressive, or the robot is under load.
-- If playback aborts at the arm controller level, later gripper events in the same run will not execute because the launched stack is already shutting down.
-
-## Troubleshooting
-
-### Playback starts but the robot does not move
-- Check the GUI log for `smart_trajectory_player` timeout messages.
-- Check whether the joint-state topics contain all seven FR3 joint names.
-- Check whether `fr3_arm_controller` is active and subscribed to the trajectory topic.
-
-### Playback is jerky or vibrates
-- Verify you are using the current `playback_joint_trajectory.py`.
-- Confirm the controller is accepting the trajectory without timestamp errors.
-- Very noisy demonstrations can still produce rough motion even after smoothing.
-
-### Playback aborts with `power_limit_violation`
-- This is a Franka reflex stop, not just a ROS warning.
-- It means the commanded motion exceeded the robot's allowed power envelope.
-- Common causes are a fast blend into the trajectory start, a recorded path with abrupt segments, or trying to replay from a noticeably different starting pose.
-- Move the robot closer to the recorded starting posture before playback and keep demonstrations gentle and smooth.
-
-### Franka Desk shows the gripper as busy after using the GUI buttons
-- The current button flow is designed to release the gripper connection after each manual `Open` or `Close` command.
-- If Desk still shows the end effector as occupied, wait a moment for the gripper node to exit and then use `Kill` in the GUI if needed.
-
-### Recording saves no CSV
-- If no joint messages were received during teach mode, the recorder will refuse to save an empty file.
-- Check that the recording joint-state topic matches your running system.
+- The recorder subscribes directly to `/NS_1/joint_states`
+- The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
+- The recorder stores `msg.position` as received and assumes that order matches the joints you want to replay
+- The GUI uses fixed startup delays in a few places, so slow systems may still need more time
+- The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node
+- CSV files are saved into the repo directory by default unless you provide another path
+- Playback can still trigger a Franka reflex stop such as `power_limit_violation` if the current pose is too far from the recording start, the path is too aggressive, or the robot is under load
+- If playback aborts at the arm-controller level, later gripper events in the same run will not execute because the launched stack is already shutting down
 
 ## Installation
 
