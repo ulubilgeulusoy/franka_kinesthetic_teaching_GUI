@@ -1,8 +1,69 @@
-[INFO] [1774041564.713372895] [smart_trajectory_player]: Current pose already near trajectory start; skipping blend-in move
-[rviz2-1] [ERROR] [1774041566.852252854] [moveit_ros_visualization.motion_planning_frame]: Action server: /recognize_objects not available
-[rviz2-1] [INFO] [1774041567.125450401] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.0019296 seconds
-[rviz2-1] [INFO] [1774041567.125489769] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
-[rviz2-1] [INFO] [1774041568.140078285] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
-[rviz2-1] [INFO] [1774041568.141380786] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/monitored_planning_scene'
-[rviz2-1] [INFO] [1774041573.144737943] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Failed to call service get_planning_scene, have you launched move_group or called psm.providePlanningSceneService()?
-[ERROR] [1774041573.751192641] [smart_trajectory_player]: No gripper move action server found for playback. Expected an already-running server on one of: /franka_gripper/move, /NS_1/franka_gripper/move, /fr3_gripper/move, /NS_1/fr3_gripper/move
+7 for command interface cartesian_pose_command with index 7
+[ros2_control_node-2] [INFO] [1774297955.625800416] [FrankaHardwareInterface]: Registering command interface: 8 for command interface cartesian_pose_command with index 8
+[ros2_control_node-2] [INFO] [1774297955.625802904] [FrankaHardwareInterface]: Registering command interface: 9 for command interface cartesian_pose_command with index 9
+[ros2_control_node-2] [INFO] [1774297955.625805450] [FrankaHardwareInterface]: Registering command interface: 10 for command interface cartesian_pose_command with index 10
+[ros2_control_node-2] [INFO] [1774297955.625808084] [FrankaHardwareInterface]: Registering command interface: 11 for command interface cartesian_pose_command with index 11
+[ros2_control_node-2] [INFO] [1774297955.625810816] [FrankaHardwareInterface]: Registering command interface: 12 for command interface cartesian_pose_command with index 12
+[ros2_control_node-2] [INFO] [1774297955.625813340] [FrankaHardwareInterface]: Registering command interface: 13 for command interface cartesian_pose_command with index 13
+[ros2_control_node-2] [INFO] [1774297955.625815855] [FrankaHardwareInterface]: Registering command interface: 14 for command interface cartesian_pose_command with index 14
+[ros2_control_node-2] [INFO] [1774297955.625818456] [FrankaHardwareInterface]: Registering command interface: 15 for command interface cartesian_pose_command with index 15
+[ros2_control_node-2] [INFO] [1774297955.625821093] [FrankaHardwareInterface]: Registering command interface: joint_3_position for command interface elbow_command with index 0
+[ros2_control_node-2] [INFO] [1774297955.625823807] [FrankaHardwareInterface]: Registering command interface: joint_4_sign for command interface elbow_command with index 1
+[ros2_control_node-2] [INFO] [1774297955.625883449] [resource_manager]: 'configure' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1774297955.625889714] [resource_manager]: Successful 'configure' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1774297955.625899791] [resource_manager]: 'activate' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1774297955.626155263] [FrankaHardwareInterface]: Started
+[ros2_control_node-2] [INFO] [1774297955.626167834] [resource_manager]: Successful 'activate' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [WARN] [1774297955.630577971] [NS_1.controller_manager]: Unable to lock the memory: 'No proper privileges to lock the memory!'
+[ros2_control_node-2] [INFO] [1774297955.630607805] [NS_1.controller_manager]: update rate is 1000 Hz
+[ros2_control_node-2] [INFO] [1774297955.630613850] [NS_1.controller_manager]: Spawning controller_manager RT thread with scheduler priority: 98
+[ros2_control_node-2] [INFO] [1774297955.630678777] [NS_1.controller_manager]: Successful set up FIFO RT scheduling policy with priority 98.
+[ros2_control_node-2] [INFO] [1774297955.787566301] [NS_1.controller_manager]: Loading controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1774297955.806076762] [NS_1.controller_manager]: Loading controller 'gravity_compensation_example_controller'
+[spawner-4] [INFO] [1774297955.806974991] [NS_1.spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[ros2_control_node-2] [INFO] [1774297955.815531690] [NS_1.controller_manager]: Configuring controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1774297955.815662224] [NS_1.joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-5] [INFO] [1774297955.817451296] [NS_1.spawner_gravity_compensation_example_controller]: [94mLoaded [1mgravity_compensation_example_controller[0m
+[ros2_control_node-2] [INFO] [1774297955.820876062] [NS_1.controller_manager]: Configuring controller 'gravity_compensation_example_controller'
+[spawner-4] [INFO] [1774297955.824419264] [NS_1.spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[spawner-5] [INFO] [1774297955.828207768] [NS_1.spawner_gravity_compensation_example_controller]: [92mConfigured and activated [1mgravity_compensation_example_controller[0m
+[INFO] [spawner-5]: process has finished cleanly [pid 15144]
+[INFO] [spawner-4]: process has finished cleanly [pid 15142]
+Stopping gravity compensation...
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [franka_gripper_node-6]: sending signal 'SIGINT' to process[franka_gripper_node-6]
+[INFO] [joint_state_publisher-3]: sending signal 'SIGINT' to process[joint_state_publisher-3]
+[INFO] [ros2_control_node-2]: sending signal 'SIGINT' to process[ros2_control_node-2]
+[INFO] [robot_state_publisher-1]: sending signal 'SIGINT' to process[robot_state_publisher-1]
+[ros2_control_node-2] [INFO] [1774297964.120154183] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ros2_control_node-2] [INFO] [1774297964.120234608] [NS_1.controller_manager]: Shutdown request received....
+[ros2_control_node-2] [INFO] [1774297964.120276728] [NS_1.controller_manager]: Shutting down all controllers in the controller manager.
+[ros2_control_node-2] [INFO] [1774297964.120294210] [NS_1.controller_manager]: Deactivating controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1774297964.120327508] [NS_1.controller_manager]: Shutting down controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1774297964.120351328] [NS_1.controller_manager]: Deactivating controller 'gravity_compensation_example_controller'
+[ros2_control_node-2] [INFO] [1774297964.120371766] [NS_1.controller_manager]: Shutting down controller 'gravity_compensation_example_controller'
+[franka_gripper_node-6] [INFO] [1774297964.120166198] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-1] [INFO] [1774297964.120199250] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ros2_control_node-2] [INFO] [1774297964.121200562] [resource_manager]: 'deactivate' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1774297964.121227045] [FrankaHardwareInterface]: trying to Stop...
+[ros2_control_node-2] [INFO] [1774297964.123366269] [FrankaHardwareInterface]: Stopped
+[ros2_control_node-2] [INFO] [1774297964.123410135] [resource_manager]: Successful 'deactivate' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1774297964.123415507] [resource_manager]: 'shutdown' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1774297964.123419349] [resource_manager]: Successful 'shutdown' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1774297964.123425336] [NS_1.controller_manager]: Shutting down the controller manager.
+[franka_gripper_node-6] [INFO] [1774297964.124085235] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-1] [INFO] [1774297964.126497893] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ros2_control_node-2] [INFO] [1774297964.126561538] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[joint_state_publisher-3] Traceback (most recent call last):
+[joint_state_publisher-3]   File "/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher", line 33, in <module>
+[joint_state_publisher-3]     sys.exit(load_entry_point('joint-state-publisher==2.4.0', 'console_scripts', 'joint_state_publisher')())
+[joint_state_publisher-3]   File "/opt/ros/humble/lib/python3.10/site-packages/joint_state_publisher/joint_state_publisher.py", line 470, in main
+[joint_state_publisher-3]     jsp.destroy_node()
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py", line 1696, in destroy_node
+[joint_state_publisher-3]     self.__node.destroy_when_not_in_use()
+[joint_state_publisher-3] KeyboardInterrupt
+[ERROR] [joint_state_publisher-3]: process has died [pid 15140, exit code -2, cmd '/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher --ros-args -r __node:=joint_state_publisher -r __ns:=/NS_1 --params-file /tmp/launch_params_b2bs9ak4'].
+[INFO] [robot_state_publisher-1]: process has finished cleanly [pid 15136]
+[INFO] [ros2_control_node-2]: process has finished cleanly [pid 15138]
+[INFO] [franka_gripper_node-6]: process has finished cleanly [pid 15146]
+[exit 15117] code=-2
