@@ -25,15 +25,18 @@ The GUI launches the underlying ROS 2 processes for recording and playback and s
 - Records GUI gripper button presses as timestamped `open` and `close` events and appends them to the CSV when teach mode stops.
 - Prompts for an optional custom CSV filename before recording starts.
 - Falls back to the default timestamped CSV name if no custom name is provided.
+- Starts teach/gravity mode with the Franka gripper loaded in the same bringup stack, so manual gripper actions do not start a second robot connection while the arm is in gravity compensation.
+- Uses a reduced teach-specific launch that omits `franka_robot_state_broadcaster` to lower realtime pressure during gravity compensation.
 
 ### Gravity mode
 - Provides a dedicated button to start or stop gravity compensation independently from recording.
 - Lets you put the robot into gravity compensation without starting the recorder.
-- Does not keep a persistent standalone gripper node alive by itself.
+- Exposes the gripper action server from the same bringup stack used for gravity compensation.
 
 ### GUI gripper buttons
 - `Open Gripper` and `Close Gripper` are one-shot commands.
-- Each button press starts the gripper ROS node, sends the command, and then shuts that node down again.
+- During teach/gravity mode, each button uses the already-running gripper action server from the active bringup stack.
+- Outside teach/gravity mode, each button starts the standalone gripper ROS node, sends the command, and then shuts that node down again.
 - This is intended to release the gripper connection after each manual command so Franka Desk can regain control.
 
 ### Run mode

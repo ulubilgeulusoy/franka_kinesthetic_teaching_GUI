@@ -51,6 +51,8 @@ GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
+TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
 # -------------------------------------------
 
 def bash_cmd(cmd: str):
@@ -131,6 +133,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.current_playback_proc = None
         self.teach_start_time_ns = None
         self.recorded_gripper_events = []
+        self.last_teach_failure = None
+        self.last_teach_failure_time = 0.0
 
         self._build_ui()
         self._refresh_controls()
@@ -224,11 +228,39 @@ class FR3TeachRunGUI(tk.Tk):
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _extract_teach_failure_reason(self, line: str):
+        lowered = line.lower()
+        if "libfranka:" in line and ("what():" in line or "move command aborted" in lowered):
+            return line.strip()
+        if "process has died" in lowered and "ros2_control_node" in lowered:
+            return line.strip()
+        if "controlexception" in lowered:
+            return line.strip()
+        return None
+
+    def _mark_teach_failure(self, reason: str):
+        self.last_teach_failure = reason
+        self.last_teach_failure_time = time.time()
+        self.teaching = False
+        self.gravity_mode = False
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.btn_gravity.configure(text="Start Gravity Mode")
+        self.status_var.set(f"Teach/gravity crashed: {reason}")
+        self._refresh_controls()
+
+    def _handle_runtime_log_line(self, line: str):
+        reason = self._extract_teach_failure_reason(line)
+        if reason is None:
+            return
+        if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
+            self._mark_teach_failure(reason)
+
     def _poll_queue(self):
         try:
             while True:
                 line = self.line_queue.get_nowait()
                 self._append_log(line)
+                self._handle_runtime_log_line(line)
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)
@@ -280,14 +312,15 @@ class FR3TeachRunGUI(tk.Tk):
         self._append_log("Starting gravity compensation controller...")
         self.status_var.set("Launching gravity compensation...")
         self.teach_pg.start(bash_cmd(
-            "ros2 launch franka_bringup example.launch.py "
-            "controller_name:=gravity_compensation_example_controller"
+            f"ros2 launch {shlex.quote(TEACH_LAUNCH_FILE)} "
+            f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)}"
         ))
         self.gravity_mode = True
         self.btn_gravity.configure(text="Stop Gravity Mode")
         self._refresh_controls()
 
     def start_gravity_mode(self):
+        self.last_teach_failure = None
         if self.teach_pg.is_alive():
             messagebox.showwarning(
                 "Teach processes running",
@@ -308,10 +341,14 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = False
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
-        self.status_var.set("Gravity compensation stopped.")
+        if self.last_teach_failure and time.time() - self.last_teach_failure_time < 2.0:
+            self.status_var.set(f"Teach/gravity crashed: {self.last_teach_failure}")
+        else:
+            self.status_var.set("Gravity compensation stopped.")
         self._refresh_controls()
 
     def start_teach(self):
+        self.last_teach_failure = None
         custom_name = simpledialog.askstring(
             "Recording File Name",
             "Optional: enter a CSV filename for this recording. Leave blank to use the default timestamped name.",
@@ -362,6 +399,7 @@ class FR3TeachRunGUI(tk.Tk):
             self.teach_pg.terminate_all(sig=signal.SIGTERM)
             time.sleep(0.5)
 
+        crashed_reason = self.last_teach_failure
         self.teach_pg.clear_finished()
         self.shutdown_gripper_node()
         self.append_gripper_events_to_csv()
@@ -373,7 +411,10 @@ class FR3TeachRunGUI(tk.Tk):
         self.recorded_gripper_events = []
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
-        self.status_var.set("Teach stopped. Check CSV in current directory.")
+        if crashed_reason:
+            self.status_var.set(f"Teach/gravity crashed: {crashed_reason}")
+        else:
+            self.status_var.set("Teach stopped. Check CSV in current directory.")
         self._refresh_controls()
 
 
@@ -483,6 +524,9 @@ class FR3TeachRunGUI(tk.Tk):
             f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
         ]
 
+    def should_use_teach_gripper_server(self):
+        return self.teach_pg.is_alive() and (self.teaching or self.gravity_mode)
+
     def send_gripper_move_command(self, width: float, label: str):
         if self.gripper_busy:
             self._append_log("Gripper command already in progress; ignoring new request.")
@@ -493,12 +537,27 @@ class FR3TeachRunGUI(tk.Tk):
             with self.gripper_action_lock:
                 self.set_gripper_busy(True)
                 candidates = self.get_gripper_move_action_candidates()
-                self.shutdown_gripper_node()
-                self.launch_gripper_node()
-                action_name = self.wait_for_gripper_action_server(Move, candidates)
+                launched_standalone_node = False
+                if self.should_use_teach_gripper_server():
+                    action_name = self.wait_for_gripper_action_server(Move, candidates)
+                    if action_name is None:
+                        failure_hint = f" Last failure: {self.last_teach_failure}" if self.last_teach_failure else ""
+                        self.line_queue.put(
+                            "Teach/gravity mode did not expose a gripper action server. "
+                            "Refusing to start a separate gripper node while arm control is active."
+                            + failure_hint
+                        )
+                        self.set_gripper_busy(False)
+                        return
+                else:
+                    self.shutdown_gripper_node()
+                    self.launch_gripper_node()
+                    launched_standalone_node = True
+                    action_name = self.wait_for_gripper_action_server(Move, candidates)
                 if action_name is None:
                     self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
-                    self.shutdown_gripper_node()
+                    if launched_standalone_node:
+                        self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
                     return
                 self.line_queue.put(f"Gripper action server ready: {action_name}")
@@ -540,7 +599,8 @@ class FR3TeachRunGUI(tk.Tk):
                     if client is not None:
                         client.destroy()
                     node.destroy_node()
-                    self.shutdown_gripper_node()
+                    if launched_standalone_node:
+                        self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -555,12 +615,27 @@ class FR3TeachRunGUI(tk.Tk):
             with self.gripper_action_lock:
                 self.set_gripper_busy(True)
                 candidates = self.get_gripper_grasp_action_candidates()
-                self.shutdown_gripper_node()
-                self.launch_gripper_node()
-                action_name = self.wait_for_gripper_action_server(Grasp, candidates)
+                launched_standalone_node = False
+                if self.should_use_teach_gripper_server():
+                    action_name = self.wait_for_gripper_action_server(Grasp, candidates)
+                    if action_name is None:
+                        failure_hint = f" Last failure: {self.last_teach_failure}" if self.last_teach_failure else ""
+                        self.line_queue.put(
+                            "Teach/gravity mode did not expose a gripper action server. "
+                            "Refusing to start a separate gripper node while arm control is active."
+                            + failure_hint
+                        )
+                        self.set_gripper_busy(False)
+                        return
+                else:
+                    self.shutdown_gripper_node()
+                    self.launch_gripper_node()
+                    launched_standalone_node = True
+                    action_name = self.wait_for_gripper_action_server(Grasp, candidates)
                 if action_name is None:
                     self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
-                    self.shutdown_gripper_node()
+                    if launched_standalone_node:
+                        self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
                     return
                 self.line_queue.put(f"Gripper action server ready: {action_name}")
@@ -605,6 +680,8 @@ class FR3TeachRunGUI(tk.Tk):
                     if client is not None:
                         client.destroy()
                     node.destroy_node()
+                    if launched_standalone_node:
+                        self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
 
         threading.Thread(target=worker, daemon=True).start()
