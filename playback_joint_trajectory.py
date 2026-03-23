@@ -19,6 +19,7 @@ TOLERANCE = 0.05  # rad
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
+GRIPPER_EVENT_SETTLE_SEC = 0.75
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 0.75
@@ -76,6 +77,7 @@ class SmartTrajectoryPlayer(Node):
         self.execution_complete_timer = None
         self.stop_requested = False
         self.gripper_action_lock = threading.Lock()
+        self.playback_thread = None
 
         self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
@@ -185,22 +187,47 @@ class SmartTrajectoryPlayer(Node):
                 )
             return
 
-        self.get_logger().info("Publishing blended trajectory from current pose into recording")
-        trajectory, time_offset, execution_duration = self.build_execution_trajectory()
-        for publisher in ready_publishers:
-            publisher.publish(trajectory)
+        self.get_logger().info("Starting segmented playback from current pose into recording")
         self.execution_start_time = time.monotonic()
-        if self.gripper_events:
-            self.schedule_gripper_events(time_offset)
-        self.schedule_shutdown(execution_duration, time_offset)
         self.full_sent = True
         self.timer.cancel()
+        self.playback_thread = threading.Thread(target=self.run_segmented_playback, args=(ready_publishers,), daemon=True)
+        self.playback_thread.start()
 
     def build_execution_trajectory(self):
+        timeline = self.build_playback_timeline()
         timed_points = []
+        for segment in timeline['segments']:
+            if segment['type'] == 'trajectory':
+                timed_points.extend(segment['absolute_points'])
+
+        traj = JointTrajectory()
+        traj.joint_names = JOINT_NAMES
+        traj.header.stamp = self.get_clock().now().to_msg()
+
+        previous_time = 0.0
+        previous_positions = self.actual_positions
+        for point_time, positions in timed_points:
+            point = JointTrajectoryPoint()
+            point.positions = positions
+            segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
+            point.velocities = [
+                (pos - prev_pos) / segment_dt
+                for pos, prev_pos in zip(positions, previous_positions)
+            ]
+            point.time_from_start.sec = int(point_time)
+            point.time_from_start.nanosec = int((point_time % 1) * 1e9)
+            traj.points.append(point)
+            previous_time = point_time
+            previous_positions = positions
+
+        return traj, timeline['blend_time'], previous_time
+
+    def build_playback_timeline(self):
         start_error = self.max_joint_error(self.actual_positions, self.start_position)
         blend_time = self.compute_blend_time(start_error)
         current_time = 0.0
+        blend_points = []
 
         if start_error > TOLERANCE:
             blend_steps = max(MIN_BLEND_STEPS, int(blend_time / MIN_POINT_DT))
@@ -212,7 +239,7 @@ class SmartTrajectoryPlayer(Node):
                     for current, target in zip(self.actual_positions, self.start_position)
                 ]
                 current_time += blend_step_dt
-                timed_points.append((current_time, positions))
+                blend_points.append((current_time, positions))
             self.get_logger().info(
                 f"Current pose differs from trajectory start by {start_error:.3f} rad; "
                 f"blending over {blend_time:.2f} s"
@@ -220,29 +247,72 @@ class SmartTrajectoryPlayer(Node):
         else:
             self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
 
+        event_entries = [
+            {'type': 'gripper', 'time': event_time, 'event_name': event_name}
+            for event_time, event_name in self.gripper_events
+        ]
+        event_entries.sort(key=lambda item: item['time'])
+
+        segments = []
         previous_recorded_dt = None
+        event_index = 0
+        current_segment_points = list(blend_points)
+
         for dt, positions in self.recorded_points:
+            while event_index < len(event_entries) and dt >= event_entries[event_index]['time']:
+                if current_segment_points:
+                    segment_start = current_segment_points[0][0]
+                    segments.append({
+                        'type': 'trajectory',
+                        'absolute_points': current_segment_points,
+                        'timed_points': [(t - segment_start, p) for t, p in current_segment_points],
+                        'duration': current_segment_points[-1][0] - segment_start,
+                    })
+                    current_segment_points = []
+                segments.append(event_entries[event_index])
+                event_index += 1
+
             if previous_recorded_dt is None:
                 delta_dt = MIN_POINT_DT
             else:
                 delta_dt = max(dt - previous_recorded_dt, MIN_POINT_DT)
             current_time += delta_dt
-            timed_points.append((current_time, positions))
+            current_segment_points.append((current_time, positions))
             previous_recorded_dt = dt
+
+        if current_segment_points:
+            segment_start = current_segment_points[0][0]
+            segments.append({
+                'type': 'trajectory',
+                'absolute_points': current_segment_points,
+                'timed_points': [(t - segment_start, p) for t, p in current_segment_points],
+                'duration': current_segment_points[-1][0] - segment_start,
+            })
+
+        while event_index < len(event_entries):
+            segments.append(event_entries[event_index])
+            event_index += 1
+
+        return {
+            'blend_time': blend_time,
+            'segments': segments,
+            'total_duration': current_time,
+        }
+
+    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
+        if not timed_points:
+            return 0.0
 
         traj = JointTrajectory()
         traj.joint_names = JOINT_NAMES
         traj.header.stamp = self.get_clock().now().to_msg()
 
         previous_time = 0.0
-        previous_positions = self.actual_positions
-        for idx, (point_time, positions) in enumerate(timed_points):
+        previous_positions = start_positions
+        for point_time, positions in timed_points:
             point = JointTrajectoryPoint()
             point.positions = positions
-            if idx == 0:
-                segment_dt = max(point_time, MIN_SEGMENT_DT)
-            else:
-                segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
+            segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
             point.velocities = [
                 (pos - prev_pos) / segment_dt
                 for pos, prev_pos in zip(positions, previous_positions)
@@ -253,44 +323,53 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
-        return traj, blend_time, previous_time
+        for publisher in ready_publishers:
+            publisher.publish(traj)
+        return timed_points[-1][0]
 
-    def schedule_shutdown(self, execution_duration, time_offset):
-        latest_gripper_time = max((event_time for event_time, _ in self.gripper_events), default=0.0)
-        total_runtime = max(execution_duration, time_offset + latest_gripper_time) + PLAYBACK_COMPLETION_BUFFER_SEC
-        self.get_logger().info(f"Playback will auto-exit in {total_runtime:.2f} s after trajectory start")
-        self.execution_complete_timer = self.create_timer(total_runtime, self.finish_execution)
+    def run_segmented_playback(self, ready_publishers):
+        try:
+            timeline = self.build_playback_timeline()
+            current_positions = self.actual_positions[:]
+            total_runtime = 0.0
+
+            for entry in timeline['segments']:
+                if self.stop_requested:
+                    return
+
+                if entry['type'] == 'trajectory':
+                    duration = self.publish_trajectory_segment(ready_publishers, entry['timed_points'], current_positions)
+                    if duration > 0.0:
+                        self.get_logger().info(
+                            f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
+                        )
+                        time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
+                        total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
+                        current_positions = entry['timed_points'][-1][1]
+                elif entry['type'] == 'gripper':
+                    self.get_logger().info(
+                        f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
+                    )
+                    self.execute_timed_gripper_event(entry['event_name'])
+                    time.sleep(GRIPPER_EVENT_SETTLE_SEC)
+                    total_runtime += GRIPPER_EVENT_SETTLE_SEC
+
+            self.get_logger().info(f"Segmented playback finished in {total_runtime:.2f} s; shutting down trajectory player")
+            self.request_stop()
+        except RuntimeError as exc:
+            self.get_logger().error(str(exc))
+            self.request_stop()
+
+    def execute_timed_gripper_event(self, event_name):
+        is_open = event_name == 'open'
+        action_candidates = GRIPPER_MOVE_ACTION_CANDIDATES if is_open else GRIPPER_GRASP_ACTION_CANDIDATES
+        action_cls = Move if is_open else Grasp
+        with self.gripper_action_lock:
+            self.execute_gripper_event(action_cls, action_candidates, event_name)
 
     def request_stop(self):
         self.stop_requested = True
 
-    def finish_execution(self):
-        if self.execution_complete_timer is not None:
-            self.execution_complete_timer.cancel()
-            self.execution_complete_timer = None
-        self.get_logger().info("Playback complete; shutting down trajectory player")
-        self.request_stop()
-
-    def schedule_gripper_events(self, time_offset):
-        for event_time, event_name in self.gripper_events:
-            event_delay = time_offset + event_time
-            threading.Thread(
-                target=self.run_gripper_event_after_delay,
-                args=(event_delay, event_name),
-                daemon=True,
-            ).start()
-
-    def run_gripper_event_after_delay(self, delay_sec, event_name):
-        time.sleep(max(0.0, delay_sec))
-        is_open = event_name == "open"
-        action_candidates = GRIPPER_MOVE_ACTION_CANDIDATES if is_open else GRIPPER_GRASP_ACTION_CANDIDATES
-        action_cls = Move if is_open else Grasp
-
-        with self.gripper_action_lock:
-            try:
-                self.execute_gripper_event(action_cls, action_candidates, event_name)
-            except RuntimeError as exc:
-                self.get_logger().error(str(exc))
 
     def execute_gripper_event(self, action_cls, action_candidates, event_name):
         node = rclpy.create_node(f"playback_gripper_client_{event_name}_{int(time.time() * 1000)}")
