@@ -32,7 +32,7 @@ def load_ros_environment(setup_cmd: str):
 
 # Load the ROS environment into this GUI process so native rclpy clients
 # behave the same whether the app is launched locally or through SSH/X11.
-ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
+ROS_SETUP = "source /opt/ros/jazzy/setup.bash; source /home/parc/franka_ws/install/setup.bash"
 load_ros_environment(ROS_SETUP)
 
 import rclpy
@@ -711,7 +711,8 @@ class FR3TeachRunGUI(tk.Tk):
         self._append_log(f"Selected CSV: {csv_path}")
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
-            f"ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE}"
+            f"ros2 launch franka_fr3_moveit_config moveit.launch.py "
+            f"robot_ip:={ROBOT_IP} namespace:={TEACH_NAMESPACE} arm_id:=fr3"
         ))
 
         def delayed_start():

@@ -5,6 +5,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from franka_msgs.action import Grasp, Move
@@ -33,7 +34,7 @@ GRIPPER_SPEED = 0.1
 GRIPPER_GRASP_FORCE = 40.0
 GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
-ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
+ROS_SETUP = "source /opt/ros/jazzy/setup.bash; source /home/parc/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"
 TEACH_NAMESPACE = "NS_1"
 NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
@@ -91,6 +92,8 @@ class SmartTrajectoryPlayer(Node):
             reader = csv.reader(csvfile)
             header = next(reader)
             is_new_format = len(header) >= 10 and header[1] == "row_type"
+            header_map = {column_name: index for index, column_name in enumerate(header)}
+            has_named_arm_columns = all(joint_name in header_map for joint_name in JOINT_NAMES)
             raw_points = []
             gripper_events = []
             t0 = None
@@ -104,7 +107,10 @@ class SmartTrajectoryPlayer(Node):
                 if is_new_format:
                     row_type = row[1]
                     if row_type == "joint":
-                        positions = [float(j) for j in row[3:10]]
+                        if has_named_arm_columns:
+                            positions = [float(row[header_map[joint_name]]) for joint_name in JOINT_NAMES]
+                        else:
+                            positions = [float(j) for j in row[3:10]]
                         raw_points.append((dt, positions))
                     elif row_type == "gripper":
                         gripper_events.append((dt, row[2].strip().lower()))
@@ -221,6 +227,10 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
+        if traj.points:
+            # The joint trajectory controller expects the final waypoint to end at rest.
+            traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
+
         return traj, timeline['blend_time'], previous_time
 
     def build_playback_timeline(self):
@@ -322,6 +332,10 @@ class SmartTrajectoryPlayer(Node):
             traj.points.append(point)
             previous_time = point_time
             previous_positions = positions
+
+        if traj.points:
+            # Ensure the controller sees a zero terminal velocity at the end of each segment.
+            traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
 
         for publisher in ready_publishers:
             publisher.publish(traj)
@@ -461,6 +475,8 @@ def main(args=None):
         while rclpy.ok() and not node.stop_requested:
             executor.spin_once(timeout_sec=0.1)
         print("Executed")
+    except ExternalShutdownException:
+        pass
     except KeyboardInterrupt:
         pass
     finally:

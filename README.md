@@ -2,6 +2,26 @@
 
 A small Tkinter desktop application for kinesthetic teaching and trajectory playback on a Franka Research 3 (FR3) with ROS 2.
 
+## Validated environment
+
+This repo is currently set up and validated for a native Ubuntu 24.04 + ROS 2 Jazzy workflow.
+
+- OS: Ubuntu 24.04 LTS
+- ROS distro: ROS 2 Jazzy
+- Python: Python 3
+- Robot: Franka Research 3 (FR3)
+- Robot system version used during validation: 5.7.2
+- `franka_ros2` workspace version used during validation: `v3.1.1`
+- `libfranka` version used during validation: `0.15.3`
+- `franka_description` version used during validation: `1.6.1`
+- Kernel used during validation: `6.12.79-rt17`
+
+Important notes:
+- This repo is not currently documented as a Humble-first setup anymore. The working configuration in this machine is ROS 2 Jazzy.
+- The Franka stack versions above matter. Newer `franka_ros2` / `libfranka` combinations can fail against an FR3 on system version `5.7.2`.
+- A realtime kernel is recommended for smoother control behavior. The GUI and teach/playback flows can work without perfect realtime tuning, but you may still see non-fatal warnings such as realtime publisher lock failures.
+- `run_gui.sh` is intended to be the entry point and already sources `/opt/ros/jazzy/setup.bash` and `/home/parc/franka_ws/install/setup.bash`.
+
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
@@ -59,7 +79,7 @@ The teach config currently used by the GUI is [`franka_teach.config.yaml`](/home
 ### Playback launch
 
 When you click `Run Trajectory`, the GUI launches:
-- `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1`
+- `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1 arm_id:=fr3`
 
 After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py) on the selected CSV.
 
@@ -102,11 +122,13 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 ## Requirements
 
-- ROS 2 Humble
+- Ubuntu 24.04
+- ROS 2 Jazzy
 - `franka_ros2` packages installed and configured
 - Python 3
 - Tkinter for Python: `sudo apt install python3-tk`
 - A working FR3 setup with FCI enabled and reachable on your network
+- Recommended: a realtime kernel for better runtime behavior
 
 ## Configuration
 
@@ -152,12 +174,12 @@ cd ~/franka_kinesthetic_teaching_GUI
 
 The recorder writes this header:
 
-`timestamp_ns,row_type,event,joint_1,joint_2,joint_3,joint_4,joint_5,joint_6,joint_7`
+`timestamp_ns,row_type,event,fr3_joint1,fr3_joint2,fr3_joint3,fr3_joint4,fr3_joint5,fr3_joint6,fr3_joint7`
 
 Joint samples are stored as:
 - `row_type = joint`
 - `event =` empty
-- `joint_1` through `joint_7` filled with the received joint positions
+- `fr3_joint1` through `fr3_joint7` filled in explicit arm-joint-name order
 
 Recorded GUI gripper actions are stored as:
 - `row_type = gripper`
@@ -218,7 +240,8 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 
 - The recorder subscribes directly to `/NS_1/joint_states`
 - The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
-- The recorder stores `msg.position` as received and assumes that order matches the joints you want to replay
+- The recorder now maps `/NS_1/joint_states` by name and stores only the 7 FR3 arm joints in explicit order
+- Older CSV files recorded before that change may still contain ambiguous unnamed joint columns and may not replay correctly
 - The GUI uses fixed startup delays in a few places, so slow systems may still need more time
 - The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node
 - CSV files are saved into the repo directory by default unless you provide another path

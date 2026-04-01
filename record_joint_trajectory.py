@@ -5,6 +5,16 @@ import csv
 import sys
 from datetime import datetime
 
+ARM_JOINT_NAMES = [
+    'fr3_joint1',
+    'fr3_joint2',
+    'fr3_joint3',
+    'fr3_joint4',
+    'fr3_joint5',
+    'fr3_joint6',
+    'fr3_joint7',
+]
+
 class JointRecorder(Node):
     def __init__(self):
         super().__init__('joint_recorder')
@@ -18,8 +28,15 @@ class JointRecorder(Node):
         self.start_time = self.get_clock().now().nanoseconds
 
     def listener_callback(self, msg):
+        joint_map = dict(zip(msg.name, msg.position))
+        missing = [joint_name for joint_name in ARM_JOINT_NAMES if joint_name not in joint_map]
+        if missing:
+            self.get_logger().warn(f"Skipping joint sample; missing expected arm joints: {missing}")
+            return
+
         timestamp = self.get_clock().now().nanoseconds - self.start_time
-        self.joint_data.append([timestamp] + list(msg.position))
+        ordered_positions = [joint_map[joint_name] for joint_name in ARM_JOINT_NAMES]
+        self.joint_data.append([timestamp] + ordered_positions)
 
     def save_to_csv(self, filename):
         if not self.joint_data:
@@ -31,7 +48,7 @@ class JointRecorder(Node):
                 'timestamp_ns',
                 'row_type',
                 'event',
-            ] + [f'joint_{i+1}' for i in range(len(self.joint_data[0]) - 1)])
+            ] + ARM_JOINT_NAMES)
             for row in self.joint_data:
                 writer.writerow([row[0], 'joint', ''] + row[1:])
         self.get_logger().info(f'Saved trajectory to {filename}')
@@ -55,9 +72,10 @@ def main(args=None):
         rclpy.spin(recorder)
     except KeyboardInterrupt:
         recorder.save_to_csv(build_output_filename())
-
-    recorder.destroy_node()
-    rclpy.shutdown()
+    finally:
+        recorder.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

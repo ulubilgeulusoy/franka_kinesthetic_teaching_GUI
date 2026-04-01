@@ -1,5 +1,6 @@
 ROBOT1:
   arm_id: "fr3"
+  robot_type: "fr3"
   arm_prefix: ""
   fake_sensor_commands: "false"
   joint_state_rate: 30
