@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 import csv
 import os
+import queue
 import shlex
 import signal
 import subprocess
 import threading
 import time
-import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+
+
+ROS_ENV_KEYS = (
+    "AMENT_PREFIX_PATH",
+    "CMAKE_PREFIX_PATH",
+    "COLCON_PREFIX_PATH",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "PYTHONPATH",
+    "PKG_CONFIG_PATH",
+    "ROS_DISTRO",
+    "ROS_PACKAGE_PATH",
+    "ROS_PYTHON_VERSION",
+    "RMW_IMPLEMENTATION",
+)
 
 
 def load_ros_environment(setup_cmd: str):
@@ -27,13 +42,24 @@ def load_ros_environment(setup_cmd: str):
         if not entry:
             continue
         key, _, value = entry.partition(b"=")
-        os.environ[key.decode()] = value.decode()
+        decoded_key = key.decode()
+        if decoded_key in ROS_ENV_KEYS:
+            os.environ[decoded_key] = value.decode()
+
+
+def ros_environment_ready():
+    if os.environ.get("ROS_DISTRO") != "jazzy":
+        return False
+
+    ament_prefix = os.environ.get("AMENT_PREFIX_PATH", "")
+    return "/home/parc/franka_ws/install" in ament_prefix
 
 
 # Load the ROS environment into this GUI process so native rclpy clients
 # behave the same whether the app is launched locally or through SSH/X11.
 ROS_SETUP = "source /opt/ros/jazzy/setup.bash; source /home/parc/franka_ws/install/setup.bash"
-load_ros_environment(ROS_SETUP)
+if not ros_environment_ready():
+    load_ros_environment(ROS_SETUP)
 
 import rclpy
 from rclpy.action import ActionClient
@@ -50,6 +76,7 @@ GRIPPER_GRASP_FORCE = 40.0
 GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
+GRIPPER_ACTION_FINISH_TIMEOUT_SEC = 10.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
 TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
@@ -133,6 +160,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.current_playback_proc = None
         self.teach_start_time_ns = None
         self.recorded_gripper_events = []
+        self.recorded_gripper_events_lock = threading.Lock()
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
 
@@ -387,6 +415,18 @@ class FR3TeachRunGUI(tk.Tk):
         self._refresh_controls()
 
     def stop_teach(self):
+        if self.gripper_busy:
+            self._append_log("Waiting for active gripper command to finish before saving recording...")
+            deadline = time.time() + GRIPPER_ACTION_FINISH_TIMEOUT_SEC
+            while self.gripper_busy and time.time() < deadline:
+                self.update_idletasks()
+                time.sleep(0.05)
+            if self.gripper_busy:
+                self._append_log(
+                    "Gripper command did not finish before timeout; stopping teach anyway. "
+                    "A late gripper result will not be added to this CSV."
+                )
+
         self._append_log("Stopping teach (sending SIGINT)…")
         self.teach_pg.terminate_all(sig=signal.SIGINT)
 
@@ -418,14 +458,29 @@ class FR3TeachRunGUI(tk.Tk):
         self._refresh_controls()
 
 
-    def record_gripper_event(self, event_name: str):
+    def current_teach_timestamp_ns(self):
+        if not self.teaching or self.teach_start_time_ns is None:
+            return None
+        return max(0, time.time_ns() - self.teach_start_time_ns)
+
+    def record_gripper_event(self, event_name: str, timestamp_ns: int | None = None):
         if not self.teaching or self.teach_start_time_ns is None:
             return
-        timestamp_ns = max(0, time.time_ns() - self.teach_start_time_ns)
-        self.recorded_gripper_events.append((timestamp_ns, event_name))
+        if timestamp_ns is None:
+            timestamp_ns = self.current_teach_timestamp_ns()
+        if timestamp_ns is None:
+            return
+        with self.recorded_gripper_events_lock:
+            self.recorded_gripper_events.append((int(timestamp_ns), event_name))
 
     def append_gripper_events_to_csv(self):
-        if not self.current_recording_filename or not self.recorded_gripper_events:
+        if not self.current_recording_filename:
+            return
+
+        with self.recorded_gripper_events_lock:
+            pending_events = list(self.recorded_gripper_events)
+
+        if not pending_events:
             return
 
         deadline = time.time() + 5.0
@@ -441,17 +496,22 @@ class FR3TeachRunGUI(tk.Tk):
         with open(self.current_recording_filename, newline='') as f:
             existing_rows = list(csv.reader(f))
 
+        header = existing_rows[0]
+        data_rows = existing_rows[1:]
+        expected_width = max(len(header), 10)
         existing_gripper_rows = {
             (row[0], row[2])
-            for row in existing_rows[1:]
+            for row in data_rows
             if len(row) >= 3 and row[1] == 'gripper'
         }
 
         rows_to_append = []
-        for timestamp_ns, event_name in self.recorded_gripper_events:
+        for timestamp_ns, event_name in pending_events:
             key = (str(timestamp_ns), event_name)
             if key not in existing_gripper_rows:
-                rows_to_append.append([timestamp_ns, 'gripper', event_name, '', '', '', '', '', '', ''])
+                row = [str(timestamp_ns), 'gripper', event_name]
+                row.extend([''] * max(0, expected_width - len(row)))
+                rows_to_append.append(row)
 
         if not rows_to_append:
             self._append_log(
@@ -459,12 +519,22 @@ class FR3TeachRunGUI(tk.Tk):
             )
             return
 
-        with open(self.current_recording_filename, 'a', newline='') as f:
+        def row_sort_key(row):
+            timestamp = int(row[0])
+            row_type = row[1] if len(row) > 1 else ''
+            type_order = 0 if row_type == 'joint' else 1
+            return (timestamp, type_order)
+
+        merged_rows = data_rows + rows_to_append
+        merged_rows.sort(key=row_sort_key)
+
+        with open(self.current_recording_filename, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerows(rows_to_append)
+            writer.writerow(header)
+            writer.writerows(merged_rows)
 
         self._append_log(
-            f"Appended {len(rows_to_append)} gripper event(s) to {self.current_recording_filename}"
+            f"Merged {len(rows_to_append)} gripper event(s) into {self.current_recording_filename}"
         )
 
     def launch_gripper_node(self):
@@ -527,7 +597,7 @@ class FR3TeachRunGUI(tk.Tk):
     def should_use_teach_gripper_server(self):
         return self.teach_pg.is_alive() and (self.teaching or self.gravity_mode)
 
-    def send_gripper_move_command(self, width: float, label: str):
+    def send_gripper_move_command(self, width: float, label: str, record_event_name: str | None = None, event_timestamp_ns: int | None = None):
         if self.gripper_busy:
             self._append_log("Gripper command already in progress; ignoring new request.")
             return
@@ -591,6 +661,8 @@ class FR3TeachRunGUI(tk.Tk):
 
                     result = result_future.result()
                     if result is not None and result.status == 4:
+                        if record_event_name is not None:
+                            self.record_gripper_event(record_event_name, event_timestamp_ns)
                         self.line_queue.put(f"Gripper {label.lower()} succeeded")
                     else:
                         status = getattr(result, "status", "unknown")
@@ -605,7 +677,7 @@ class FR3TeachRunGUI(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def send_gripper_close_command(self, width: float, label: str):
+    def send_gripper_close_command(self, width: float, label: str, record_event_name: str | None = None, event_timestamp_ns: int | None = None):
         if self.gripper_busy:
             self._append_log("Gripper command already in progress; ignoring new request.")
             return
@@ -672,6 +744,8 @@ class FR3TeachRunGUI(tk.Tk):
 
                     result = result_future.result()
                     if result is not None and result.status == 4:
+                        if record_event_name is not None:
+                            self.record_gripper_event(record_event_name, event_timestamp_ns)
                         self.line_queue.put(f"Gripper {label.lower()} succeeded")
                     else:
                         status = getattr(result, "status", "unknown")
@@ -687,12 +761,22 @@ class FR3TeachRunGUI(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def open_gripper(self):
-        self.record_gripper_event("open")
-        self.send_gripper_move_command(GRIPPER_OPEN_WIDTH, "Open")
+        event_timestamp_ns = self.current_teach_timestamp_ns()
+        self.send_gripper_move_command(
+            GRIPPER_OPEN_WIDTH,
+            "Open",
+            record_event_name="open",
+            event_timestamp_ns=event_timestamp_ns,
+        )
 
     def close_gripper(self):
-        self.record_gripper_event("close")
-        self.send_gripper_close_command(GRIPPER_CLOSE_WIDTH, "Close")
+        event_timestamp_ns = self.current_teach_timestamp_ns()
+        self.send_gripper_close_command(
+            GRIPPER_CLOSE_WIDTH,
+            "Close",
+            record_event_name="close",
+            event_timestamp_ns=event_timestamp_ns,
+        )
 
     def on_run_clicked(self):
         csv_path = filedialog.askopenfilename(

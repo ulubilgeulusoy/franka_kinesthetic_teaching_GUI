@@ -17,15 +17,16 @@ JOINT_NAMES = [
     "fr3_joint4", "fr3_joint5", "fr3_joint6", "fr3_joint7"
 ]
 TOLERANCE = 0.05  # rad
+MAX_AUTO_BLEND_START_ERROR_RAD = 0.75
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
-MIN_BLEND_TIME_SEC = 0.75
+MIN_BLEND_TIME_SEC = 1.5
 MAX_BLEND_TIME_SEC = 6.0
-BLEND_SPEED_RAD_PER_SEC = 0.35
+BLEND_SPEED_RAD_PER_SEC = 0.20
 MIN_BLEND_STEPS = 10
 MIN_SEGMENT_DT = 1e-3
 GRIPPER_OPEN_WIDTH = 0.08
@@ -235,6 +236,12 @@ class SmartTrajectoryPlayer(Node):
 
     def build_playback_timeline(self):
         start_error = self.max_joint_error(self.actual_positions, self.start_position)
+        if start_error > MAX_AUTO_BLEND_START_ERROR_RAD:
+            raise RuntimeError(
+                f"Playback start pose is too far from the recording start ({start_error:.3f} rad > "
+                f"{MAX_AUTO_BLEND_START_ERROR_RAD:.3f} rad). Move the robot closer to the taught start pose "
+                "before running playback."
+            )
         blend_time = self.compute_blend_time(start_error)
         current_time = 0.0
         blend_points = []
@@ -425,6 +432,10 @@ class SmartTrajectoryPlayer(Node):
             self.spin_until_future_complete(executor, result_future)
             result = result_future.result()
             status = getattr(result, 'status', 'unknown')
+            if status != 4:
+                raise RuntimeError(
+                    f"Recorded gripper event '{event_name}' failed via {action_name} with status {status}"
+                )
             self.get_logger().info(
                 f"Recorded gripper event '{event_name}' finished with status {status}"
             )
