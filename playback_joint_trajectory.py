@@ -23,6 +23,7 @@ WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
 INITIAL_TRAJECTORY_HOLD_SEC = 0.20
+INITIAL_TRAJECTORY_RAMP_DT_SEC = 0.05
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 1.5
@@ -337,7 +338,7 @@ class SmartTrajectoryPlayer(Node):
             hold_point.time_from_start.nanosec = int((INITIAL_TRAJECTORY_HOLD_SEC % 1) * 1e9)
             traj.points.append(hold_point)
             previous_time = INITIAL_TRAJECTORY_HOLD_SEC
-            initial_time_offset = INITIAL_TRAJECTORY_HOLD_SEC
+            initial_time_offset = INITIAL_TRAJECTORY_HOLD_SEC + INITIAL_TRAJECTORY_RAMP_DT_SEC
 
         for point_time, positions in timed_points:
             adjusted_time = point_time + initial_time_offset
@@ -382,7 +383,7 @@ class SmartTrajectoryPlayer(Node):
                     )
                     if duration > 0.0:
                         if first_trajectory_segment:
-                            duration += INITIAL_TRAJECTORY_HOLD_SEC
+                            duration += INITIAL_TRAJECTORY_HOLD_SEC + INITIAL_TRAJECTORY_RAMP_DT_SEC
                         self.get_logger().info(
                             f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
                         )
