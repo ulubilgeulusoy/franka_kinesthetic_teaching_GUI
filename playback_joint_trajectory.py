@@ -21,6 +21,7 @@ WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
+INITIAL_SETTLE_SEC = 0.10
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 1.5
@@ -256,6 +257,8 @@ class SmartTrajectoryPlayer(Node):
             )
         else:
             self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
+            current_time = INITIAL_SETTLE_SEC
+            blend_points.append((current_time, list(self.start_position)))
 
         event_entries = [
             {'type': 'gripper', 'time': event_time, 'event_name': event_name}
