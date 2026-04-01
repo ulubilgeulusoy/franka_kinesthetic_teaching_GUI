@@ -85,6 +85,17 @@ TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
 def bash_cmd(cmd: str):
     return f'bash -lc "{ROS_SETUP}; {cmd}"'
 
+
+def normalize_recording_filename(custom_name: str):
+    cleaned = custom_name.strip().strip("\"'")
+    cleaned = os.path.basename(cleaned)
+    if not cleaned:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        return f"joint_trajectory_{timestamp}.csv"
+    if not cleaned.lower().endswith(".csv"):
+        cleaned += ".csv"
+    return cleaned
+
 class ProcessGroup:
     def __init__(self, line_queue: queue.Queue):
         self.procs = []
@@ -392,13 +403,7 @@ class FR3TeachRunGUI(tk.Tk):
         else:
             self._append_log("Gravity compensation already active; starting recorder only...")
 
-        if custom_name:
-            if not custom_name.endswith(".csv"):
-                custom_name += ".csv"
-            recording_filename = custom_name
-        else:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            recording_filename = f"joint_trajectory_{timestamp}.csv"
+        recording_filename = normalize_recording_filename(custom_name)
 
         recording_path = os.path.abspath(os.path.join(SCRIPT_DIR, recording_filename))
         recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(recording_path)}"
@@ -815,7 +820,7 @@ class FR3TeachRunGUI(tk.Tk):
             self.line_queue.put(f"Gripper action server ready: {action_name}")
             self.line_queue.put("Starting trajectory playback…")
             playback_proc = self.run_pg.start(bash_cmd(
-                f"python3 playback_joint_trajectory.py '{csv_path}'"
+                f"python3 playback_joint_trajectory.py {shlex.quote(csv_path)}"
             ))
             self.current_playback_proc = playback_proc
             threading.Thread(target=self._watch_playback_process, args=(playback_proc,), daemon=True).start()
