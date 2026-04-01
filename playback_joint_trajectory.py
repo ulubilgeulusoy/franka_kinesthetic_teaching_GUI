@@ -21,7 +21,6 @@ WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
-FIRST_TRAJECTORY_POINT_LEAD_SEC = 0.05
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 1.5
@@ -310,7 +309,7 @@ class SmartTrajectoryPlayer(Node):
             'total_duration': current_time,
         }
 
-    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions, soften_start: bool = False):
+    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
         if not timed_points:
             return 0.0
 
@@ -320,24 +319,16 @@ class SmartTrajectoryPlayer(Node):
 
         previous_time = 0.0
         previous_positions = start_positions
-        initial_time_offset = 0.0
 
-        if soften_start:
-            initial_time_offset = max(0.0, FIRST_TRAJECTORY_POINT_LEAD_SEC - timed_points[0][0])
-
-        for index, (point_time, positions) in enumerate(timed_points):
-            adjusted_time = point_time + initial_time_offset
-            is_first_point = index == 0
+        for point_time, positions in timed_points:
+            adjusted_time = point_time
             point = JointTrajectoryPoint()
             point.positions = positions
             segment_dt = max(adjusted_time - previous_time, MIN_SEGMENT_DT)
-            if soften_start and is_first_point:
-                point.velocities = [0.0] * len(JOINT_NAMES)
-            else:
-                point.velocities = [
-                    (pos - prev_pos) / segment_dt
-                    for pos, prev_pos in zip(positions, previous_positions)
-                ]
+            point.velocities = [
+                (pos - prev_pos) / segment_dt
+                for pos, prev_pos in zip(positions, previous_positions)
+            ]
             point.time_from_start.sec = int(adjusted_time)
             point.time_from_start.nanosec = int((adjusted_time % 1) * 1e9)
             traj.points.append(point)
@@ -357,7 +348,6 @@ class SmartTrajectoryPlayer(Node):
             timeline = self.build_playback_timeline()
             current_positions = self.actual_positions[:]
             total_runtime = 0.0
-            first_trajectory_segment = True
 
             for entry in timeline['segments']:
                 if self.stop_requested:
@@ -368,7 +358,6 @@ class SmartTrajectoryPlayer(Node):
                         ready_publishers,
                         entry['timed_points'],
                         current_positions,
-                        soften_start=first_trajectory_segment,
                     )
                     if duration > 0.0:
                         self.get_logger().info(
@@ -377,7 +366,6 @@ class SmartTrajectoryPlayer(Node):
                         time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
                         total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
                         current_positions = entry['timed_points'][-1][1]
-                        first_trajectory_segment = False
                 elif entry['type'] == 'gripper':
                     self.get_logger().info(
                         f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
