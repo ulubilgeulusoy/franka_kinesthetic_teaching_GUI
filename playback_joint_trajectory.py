@@ -320,12 +320,14 @@ class SmartTrajectoryPlayer(Node):
 
         previous_time = 0.0
         previous_positions = start_positions
+        initial_time_offset = 0.0
+
+        if soften_start:
+            initial_time_offset = max(0.0, FIRST_TRAJECTORY_POINT_LEAD_SEC - timed_points[0][0])
 
         for index, (point_time, positions) in enumerate(timed_points):
-            adjusted_time = point_time
+            adjusted_time = point_time + initial_time_offset
             is_first_point = index == 0
-            if soften_start and is_first_point:
-                adjusted_time = max(point_time, FIRST_TRAJECTORY_POINT_LEAD_SEC)
             point = JointTrajectoryPoint()
             point.positions = positions
             segment_dt = max(adjusted_time - previous_time, MIN_SEGMENT_DT)
