@@ -22,6 +22,7 @@ WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
+INITIAL_TRAJECTORY_HOLD_SEC = 0.20
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 1.5
@@ -316,7 +317,7 @@ class SmartTrajectoryPlayer(Node):
             'total_duration': current_time,
         }
 
-    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
+    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions, add_initial_hold: bool = False):
         if not timed_points:
             return 0.0
 
@@ -326,18 +327,31 @@ class SmartTrajectoryPlayer(Node):
 
         previous_time = 0.0
         previous_positions = start_positions
+        initial_time_offset = 0.0
+
+        if add_initial_hold:
+            hold_point = JointTrajectoryPoint()
+            hold_point.positions = list(start_positions)
+            hold_point.velocities = [0.0] * len(JOINT_NAMES)
+            hold_point.time_from_start.sec = int(INITIAL_TRAJECTORY_HOLD_SEC)
+            hold_point.time_from_start.nanosec = int((INITIAL_TRAJECTORY_HOLD_SEC % 1) * 1e9)
+            traj.points.append(hold_point)
+            previous_time = INITIAL_TRAJECTORY_HOLD_SEC
+            initial_time_offset = INITIAL_TRAJECTORY_HOLD_SEC
+
         for point_time, positions in timed_points:
+            adjusted_time = point_time + initial_time_offset
             point = JointTrajectoryPoint()
             point.positions = positions
-            segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
+            segment_dt = max(adjusted_time - previous_time, MIN_SEGMENT_DT)
             point.velocities = [
                 (pos - prev_pos) / segment_dt
                 for pos, prev_pos in zip(positions, previous_positions)
             ]
-            point.time_from_start.sec = int(point_time)
-            point.time_from_start.nanosec = int((point_time % 1) * 1e9)
+            point.time_from_start.sec = int(adjusted_time)
+            point.time_from_start.nanosec = int((adjusted_time % 1) * 1e9)
             traj.points.append(point)
-            previous_time = point_time
+            previous_time = adjusted_time
             previous_positions = positions
 
         if traj.points:
@@ -353,20 +367,29 @@ class SmartTrajectoryPlayer(Node):
             timeline = self.build_playback_timeline()
             current_positions = self.actual_positions[:]
             total_runtime = 0.0
+            first_trajectory_segment = True
 
             for entry in timeline['segments']:
                 if self.stop_requested:
                     return
 
                 if entry['type'] == 'trajectory':
-                    duration = self.publish_trajectory_segment(ready_publishers, entry['timed_points'], current_positions)
+                    duration = self.publish_trajectory_segment(
+                        ready_publishers,
+                        entry['timed_points'],
+                        current_positions,
+                        add_initial_hold=first_trajectory_segment,
+                    )
                     if duration > 0.0:
+                        if first_trajectory_segment:
+                            duration += INITIAL_TRAJECTORY_HOLD_SEC
                         self.get_logger().info(
                             f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
                         )
                         time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
                         total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
                         current_positions = entry['timed_points'][-1][1]
+                        first_trajectory_segment = False
                 elif entry['type'] == 'gripper':
                     self.get_logger().info(
                         f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
