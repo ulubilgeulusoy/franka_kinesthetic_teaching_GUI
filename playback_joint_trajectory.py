@@ -26,8 +26,10 @@ INITIAL_SETTLE_SEC = 0.10
 SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
 MIN_BLEND_TIME_SEC = 1.5
-MAX_BLEND_TIME_SEC = 6.0
+MAX_BLEND_TIME_SEC = 12.0
 BLEND_SPEED_RAD_PER_SEC = 0.20
+FAR_START_ERROR_RAD = 0.35
+FAR_START_SLOWDOWN_GAIN = 2.5
 MIN_BLEND_STEPS = 10
 MIN_SEGMENT_DT = 1e-3
 GRIPPER_OPEN_WIDTH = 0.08
@@ -488,10 +490,13 @@ class SmartTrajectoryPlayer(Node):
     def compute_blend_time(self, max_error):
         if max_error <= START_BLEND_EPSILON_RAD:
             return 0.0
-        return min(
-            MAX_BLEND_TIME_SEC,
-            max(MIN_BLEND_TIME_SEC, max_error / BLEND_SPEED_RAD_PER_SEC),
-        )
+        base_time = max(MIN_BLEND_TIME_SEC, max_error / BLEND_SPEED_RAD_PER_SEC)
+        if max_error <= FAR_START_ERROR_RAD:
+            return min(MAX_BLEND_TIME_SEC, base_time)
+
+        far_error = max_error - FAR_START_ERROR_RAD
+        slowdown_scale = 1.0 + FAR_START_SLOWDOWN_GAIN * (far_error / FAR_START_ERROR_RAD) ** 2
+        return min(MAX_BLEND_TIME_SEC, base_time * slowdown_scale)
 
     def max_joint_error(self, current_positions, target_positions):
         return max(abs(a - b) for a, b in zip(current_positions, target_positions))
