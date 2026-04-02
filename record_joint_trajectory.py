@@ -38,7 +38,7 @@ class JointRecorder(Node):
         self.joint_data = []
         self.start_time = None
         self.active_joint_topic = None
-        self.pending_samples = {}
+        self.pending_samples = {topic: [] for topic in JOINT_STATE_TOPICS}
         self.selection_started_ns = self.get_clock().now().nanoseconds
         self.selection_timer = self.create_timer(0.1, self._attempt_topic_selection)
 
@@ -46,24 +46,32 @@ class JointRecorder(Node):
         if self.active_joint_topic is not None:
             return
 
-        if '/NS_1/franka/joint_states' in self.pending_samples:
+        if self.pending_samples['/NS_1/franka/joint_states']:
             self._activate_joint_topic('/NS_1/franka/joint_states')
             return
 
         elapsed_sec = (self.get_clock().now().nanoseconds - self.selection_started_ns) / 1e9
-        if elapsed_sec < TOPIC_SELECTION_TIMEOUT_SEC or not self.pending_samples:
+        if elapsed_sec < TOPIC_SELECTION_TIMEOUT_SEC or not any(self.pending_samples.values()):
             return
 
-        best_topic = min(self.pending_samples, key=lambda topic: TOPIC_PRIORITY[topic])
+        available_topics = [topic for topic, samples in self.pending_samples.items() if samples]
+        best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
         self._activate_joint_topic(best_topic)
 
     def _activate_joint_topic(self, source_topic):
         if self.active_joint_topic is not None:
             return
+        buffered_samples = self.pending_samples.get(source_topic, [])
+        if not buffered_samples:
+            return
         self.active_joint_topic = source_topic
-        self.start_time = self.get_clock().now().nanoseconds
+        self.start_time = buffered_samples[0][0]
         self.get_logger().info(f"Recording joint states from {source_topic}")
         self.selection_timer.cancel()
+        for sample_time_ns, ordered_positions in buffered_samples:
+            timestamp = sample_time_ns - self.start_time
+            self.joint_data.append([timestamp] + ordered_positions)
+        self.pending_samples = {topic: [] for topic in JOINT_STATE_TOPICS}
 
     def listener_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
@@ -73,7 +81,8 @@ class JointRecorder(Node):
 
         ordered_positions = [joint_map[joint_name] for joint_name in ARM_JOINT_NAMES]
         if self.active_joint_topic is None:
-            self.pending_samples[source_topic] = ordered_positions
+            sample_time_ns = self.get_clock().now().nanoseconds
+            self.pending_samples[source_topic].append((sample_time_ns, ordered_positions))
             self._attempt_topic_selection()
             return
 
@@ -84,6 +93,10 @@ class JointRecorder(Node):
         self.joint_data.append([timestamp] + ordered_positions)
 
     def save_to_csv(self, filename):
+        if not self.joint_data and any(self.pending_samples.values()):
+            available_topics = [topic for topic, samples in self.pending_samples.items() if samples]
+            best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
+            self._activate_joint_topic(best_topic)
         if not self.joint_data:
             self.get_logger().error("No joint data recorded! Not saving CSV.")
             return
