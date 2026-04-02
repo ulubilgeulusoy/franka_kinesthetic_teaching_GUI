@@ -17,6 +17,7 @@ JOINT_NAMES = [
     "fr3_joint4", "fr3_joint5", "fr3_joint6", "fr3_joint7"
 ]
 TOLERANCE = 0.05  # rad
+START_BLEND_EPSILON_RAD = 0.005
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
@@ -259,13 +260,15 @@ class SmartTrajectoryPlayer(Node):
         current_time = 0.0
         blend_points = []
 
-        if start_error > TOLERANCE:
+        if start_error > START_BLEND_EPSILON_RAD:
             blend_steps = max(MIN_BLEND_STEPS, int(blend_time / MIN_POINT_DT))
             blend_step_dt = max(MIN_POINT_DT, blend_time / blend_steps)
             for step_idx in range(1, blend_steps + 1):
                 alpha = step_idx / blend_steps
+                # Smoothstep gives a zero-velocity start/end to reduce startup twitch.
+                eased_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
                 positions = [
-                    current + alpha * (target - current)
+                    current + eased_alpha * (target - current)
                     for current, target in zip(self.actual_positions, self.start_position)
                 ]
                 current_time += blend_step_dt
@@ -483,7 +486,7 @@ class SmartTrajectoryPlayer(Node):
             executor.spin_once(timeout_sec=timeout_sec)
 
     def compute_blend_time(self, max_error):
-        if max_error <= TOLERANCE:
+        if max_error <= START_BLEND_EPSILON_RAD:
             return 0.0
         return min(
             MAX_BLEND_TIME_SEC,
