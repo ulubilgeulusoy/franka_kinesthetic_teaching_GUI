@@ -20,7 +20,10 @@ JOINT_STATE_TOPICS = [
     '/joint_states',
 ]
 TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATE_TOPICS)}
-TOPIC_SELECTION_TIMEOUT_SEC = 1.5
+PREFERRED_JOINT_STATE_TOPIC = '/NS_1/franka/joint_states'
+TOPIC_SELECTION_TIMEOUT_SEC = 5.0
+DEFAULT_START_POSE = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307, 0.0]
+DEFAULT_POSE_TOLERANCE_RAD = 0.02
 
 class JointRecorder(Node):
     def __init__(self):
@@ -42,19 +45,35 @@ class JointRecorder(Node):
         self.selection_started_ns = self.get_clock().now().nanoseconds
         self.selection_timer = self.create_timer(0.1, self._attempt_topic_selection)
 
+    def is_default_start_pose(self, positions):
+        return all(
+            abs(position - default_position) <= DEFAULT_POSE_TOLERANCE_RAD
+            for position, default_position in zip(positions, DEFAULT_START_POSE)
+        )
+
+    def topic_has_usable_samples(self, topic):
+        samples = self.pending_samples.get(topic, [])
+        if not samples:
+            return False
+        if topic == PREFERRED_JOINT_STATE_TOPIC:
+            return True
+        return any(not self.is_default_start_pose(positions) for _, positions in samples)
+
     def _attempt_topic_selection(self):
         if self.active_joint_topic is not None:
             return
 
-        if self.pending_samples['/NS_1/franka/joint_states']:
-            self._activate_joint_topic('/NS_1/franka/joint_states')
+        if self.topic_has_usable_samples(PREFERRED_JOINT_STATE_TOPIC):
+            self._activate_joint_topic(PREFERRED_JOINT_STATE_TOPIC)
             return
 
         elapsed_sec = (self.get_clock().now().nanoseconds - self.selection_started_ns) / 1e9
         if elapsed_sec < TOPIC_SELECTION_TIMEOUT_SEC or not any(self.pending_samples.values()):
             return
 
-        available_topics = [topic for topic, samples in self.pending_samples.items() if samples]
+        available_topics = [topic for topic in JOINT_STATE_TOPICS if self.topic_has_usable_samples(topic)]
+        if not available_topics:
+            return
         best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
         self._activate_joint_topic(best_topic)
 
@@ -94,9 +113,10 @@ class JointRecorder(Node):
 
     def save_to_csv(self, filename):
         if not self.joint_data and any(self.pending_samples.values()):
-            available_topics = [topic for topic, samples in self.pending_samples.items() if samples]
-            best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
-            self._activate_joint_topic(best_topic)
+            available_topics = [topic for topic in JOINT_STATE_TOPICS if self.topic_has_usable_samples(topic)]
+            if available_topics:
+                best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
+                self._activate_joint_topic(best_topic)
         if not self.joint_data:
             self.get_logger().error("No joint data recorded! Not saving CSV.")
             return

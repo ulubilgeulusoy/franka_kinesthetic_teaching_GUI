@@ -22,6 +22,7 @@ def load_yaml(file_path):
 
 def generate_robot_nodes(context):
     config_file = LaunchConfiguration('robot_config_file').perform(context)
+    spawn_gravity_controller = LaunchConfiguration('spawn_gravity_controller').perform(context).lower() == 'true'
     if not os.path.isabs(config_file) and os.path.sep not in config_file:
         config_file = os.path.join(package_share, 'config', config_file)
 
@@ -51,20 +52,21 @@ def generate_robot_nodes(context):
             )
         )
 
-        nodes.append(
-            Node(
-                package='controller_manager',
-                executable='spawner',
-                namespace=namespace,
-                arguments=['gravity_compensation_example_controller', '--controller-manager-timeout', '30'],
-                parameters=[
-                    PathJoinSubstitution(
-                        [FindPackageShare('franka_bringup'), 'config', 'controllers.yaml']
-                    )
-                ],
-                output='screen',
+        if spawn_gravity_controller:
+            nodes.append(
+                Node(
+                    package='controller_manager',
+                    executable='spawner',
+                    namespace=namespace,
+                    arguments=['gravity_compensation_example_controller', '--controller-manager-timeout', '30'],
+                    parameters=[
+                        PathJoinSubstitution(
+                            [FindPackageShare('franka_bringup'), 'config', 'controllers.yaml']
+                        )
+                    ],
+                    output='screen',
+                )
             )
-        )
 
     return nodes
 
@@ -75,6 +77,11 @@ def generate_launch_description():
             'robot_config_file',
             default_value='franka.config.yaml',
             description='Config file name (looked up in franka_bringup/config/) or full path',
+        ),
+        DeclareLaunchArgument(
+            'spawn_gravity_controller',
+            default_value='true',
+            description='Whether to spawn the gravity compensation controller automatically.',
         ),
         OpaqueFunction(function=generate_robot_nodes),
     ])

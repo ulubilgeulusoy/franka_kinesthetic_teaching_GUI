@@ -52,6 +52,8 @@ if NAMESPACE_PREFIX:
     ]
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
 TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATES_TOPICS)}
+PREFERRED_JOINT_STATE_TOPIC = JOINT_STATES_TOPICS[0]
+PREFERRED_TOPIC_GRACE_SEC = 2.0
 GRIPPER_MOVE_ACTION_CANDIDATES = [
     "/franka_gripper/move",
     f"/{TEACH_NAMESPACE}/franka_gripper/move",
@@ -88,6 +90,8 @@ class SmartTrajectoryPlayer(Node):
 
         self.actual_positions = None
         self.active_joint_topic = None
+        self.first_joint_state_time = None
+        self.preferred_joint_state_seen = False
         self.full_sent = False
         self.start_time_ns = self.get_clock().now().nanoseconds
         self.execution_start_time = None
@@ -177,6 +181,10 @@ class SmartTrajectoryPlayer(Node):
         missing = [j for j in JOINT_NAMES if j not in joint_map]
         if missing:
             return
+        if self.first_joint_state_time is None:
+            self.first_joint_state_time = time.monotonic()
+        if source_topic == PREFERRED_JOINT_STATE_TOPIC:
+            self.preferred_joint_state_seen = True
         if self.active_joint_topic is None:
             self.active_joint_topic = source_topic
             self.get_logger().info(f"Using joint states from {source_topic}")
@@ -201,6 +209,19 @@ class SmartTrajectoryPlayer(Node):
             else:
                 self.get_logger().info("Waiting for current joint state on: " + ", ".join(JOINT_STATES_TOPICS))
             return
+
+        if (
+            self.active_joint_topic != PREFERRED_JOINT_STATE_TOPIC
+            and not self.preferred_joint_state_seen
+            and self.first_joint_state_time is not None
+        ):
+            fallback_elapsed = time.monotonic() - self.first_joint_state_time
+            if fallback_elapsed < PREFERRED_TOPIC_GRACE_SEC:
+                self.get_logger().info(
+                    f"Waiting briefly for preferred joint states on {PREFERRED_JOINT_STATE_TOPIC} "
+                    f"before starting from fallback topic {self.active_joint_topic}"
+                )
+                return
 
         ready_publishers = [pub for pub in self.trajectory_publishers if pub.get_subscription_count() > 0]
         if not ready_publishers:

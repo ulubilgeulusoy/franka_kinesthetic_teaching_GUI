@@ -80,6 +80,8 @@ GRIPPER_ACTION_FINISH_TIMEOUT_SEC = 10.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
 TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
+PREFERRED_TEACH_JOINT_TOPIC = f"/{TEACH_NAMESPACE}/franka/joint_states" if TEACH_NAMESPACE else "/franka/joint_states"
+TEACH_RECORDER_READY_TIMEOUT_SEC = 8.0
 # -------------------------------------------
 
 def bash_cmd(cmd: str):
@@ -174,6 +176,10 @@ class FR3TeachRunGUI(tk.Tk):
         self.recorded_gripper_events_lock = threading.Lock()
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
+        self.teach_arming = False
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
+        self.teach_start_deadline = None
 
         self._build_ui()
         self._refresh_controls()
@@ -282,16 +288,32 @@ class FR3TeachRunGUI(tk.Tk):
         self.last_teach_failure_time = time.time()
         self.teaching = False
         self.gravity_mode = False
+        self.teach_arming = False
+        self.teach_start_deadline = None
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.status_var.set(f"Teach/gravity crashed: {reason}")
         self._refresh_controls()
 
     def _handle_runtime_log_line(self, line: str):
+        if "Recording joint states from " in line:
+            selected_topic = line.split("Recording joint states from ", 1)[1].strip()
+            self.teach_recorder_topic = selected_topic
+            if selected_topic == PREFERRED_TEACH_JOINT_TOPIC:
+                self.teach_recorder_ready = True
+            elif self.teach_arming:
+                self.after(
+                    0,
+                    lambda: self._abort_pending_teach_start(
+                        f"Recorder latched onto fallback topic {selected_topic} instead of {PREFERRED_TEACH_JOINT_TOPIC}."
+                    ),
+                )
         reason = self._extract_teach_failure_reason(line)
         if reason is None:
             return
-        if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
+        if self.teach_pg.is_alive() or self.teaching or self.gravity_mode or self.teach_arming:
             self._mark_teach_failure(reason)
 
     def _poll_queue(self):
@@ -307,6 +329,11 @@ class FR3TeachRunGUI(tk.Tk):
     def _refresh_controls(self):
         if self.teaching:
             self.btn_teach.configure(state="normal")
+            self.btn_run.configure(state="disabled")
+            self.btn_gravity.configure(state="disabled")
+            self.btn_open_dir.configure(state="disabled")
+        elif self.teach_arming:
+            self.btn_teach.configure(state="disabled")
             self.btn_run.configure(state="disabled")
             self.btn_gravity.configure(state="disabled")
             self.btn_open_dir.configure(state="disabled")
@@ -352,11 +379,22 @@ class FR3TeachRunGUI(tk.Tk):
         self.status_var.set("Launching gravity compensation...")
         self.teach_pg.start(bash_cmd(
             f"ros2 launch {shlex.quote(TEACH_LAUNCH_FILE)} "
-            f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)}"
+            f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)} "
+            "spawn_gravity_controller:=true"
         ))
         self.gravity_mode = True
         self.btn_gravity.configure(text="Stop Gravity Mode")
         self._refresh_controls()
+
+    def _spawn_teach_gravity_controller(self):
+        controller_manager = f"/{TEACH_NAMESPACE}/controller_manager" if TEACH_NAMESPACE else "/controller_manager"
+        gravity_cmd = (
+            "ros2 run controller_manager spawner gravity_compensation_example_controller "
+            f"--controller-manager {shlex.quote(controller_manager)} "
+            "--controller-manager-timeout 30"
+        )
+        self._append_log("Recorder ready; enabling gravity compensation now...")
+        self.teach_pg.start(bash_cmd(gravity_cmd))
 
     def start_gravity_mode(self):
         self.last_teach_failure = None
@@ -386,6 +424,55 @@ class FR3TeachRunGUI(tk.Tk):
             self.status_var.set("Gravity compensation stopped.")
         self._refresh_controls()
 
+    def _finalize_teach_start(self):
+        if not self.teach_arming:
+            return
+        self.teach_arming = False
+        self.teaching = True
+        self.gravity_mode = True
+        self.teach_start_time_ns = time.time_ns()
+        self.teach_start_deadline = None
+        self.btn_teach.configure(text="Stop Teach (Save)")
+        self.status_var.set("Recording... Move arm by hand to teach.")
+        self._spawn_teach_gravity_controller()
+        self._refresh_controls()
+
+    def _abort_pending_teach_start(self, reason: str):
+        if not self.teach_arming:
+            return
+        self._append_log(reason)
+        self.teach_pg.terminate_all(sig=signal.SIGINT)
+        time.sleep(0.5)
+        self.teach_pg.terminate_all(sig=signal.SIGTERM)
+        self.teach_pg.clear_finished()
+        self.teach_arming = False
+        self.teaching = False
+        self.gravity_mode = False
+        self.teach_start_time_ns = None
+        self.current_recording_filename = None
+        self.recorded_gripper_events = []
+        self.teach_start_deadline = None
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.btn_gravity.configure(text="Start Gravity Mode")
+        self.status_var.set(reason)
+        self._refresh_controls()
+
+    def _poll_teach_startup(self):
+        if not self.teach_arming:
+            return
+        if self.teach_recorder_ready:
+            self._finalize_teach_start()
+            return
+        if self.teach_start_deadline and time.time() > self.teach_start_deadline:
+            chosen_topic = self.teach_recorder_topic or "no joint-state topic"
+            self._abort_pending_teach_start(
+                f"Teach start timed out waiting for recorder readiness. Expected {PREFERRED_TEACH_JOINT_TOPIC}, got {chosen_topic}."
+            )
+            return
+        self.after(100, self._poll_teach_startup)
+
     def start_teach(self):
         self.last_teach_failure = None
         custom_name = simpledialog.askstring(
@@ -398,8 +485,14 @@ class FR3TeachRunGUI(tk.Tk):
         custom_name = custom_name.strip()
 
         if not self.gravity_mode:
-            self.launch_gravity_controller()
-            time.sleep(1.0)
+            self._append_log("Starting teach bringup without unlocking the arm yet...")
+            self.status_var.set("Launching teach bringup...")
+            self.teach_pg.start(bash_cmd(
+                f"ros2 launch {shlex.quote(TEACH_LAUNCH_FILE)} "
+                f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)} "
+                "spawn_gravity_controller:=false"
+            ))
+            time.sleep(0.5)
         else:
             self._append_log("Gravity compensation already active; starting recorder only...")
 
@@ -410,16 +503,23 @@ class FR3TeachRunGUI(tk.Tk):
         self._append_log(f"Starting joint recorder... output file: {recording_path}")
 
         self.current_recording_filename = recording_path
-        self.teach_start_time_ns = time.time_ns()
+        self.teach_start_time_ns = None
         self.recorded_gripper_events = []
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
+        self.teach_arming = True
+        self.teach_start_deadline = time.time() + TEACH_RECORDER_READY_TIMEOUT_SEC
         self.teach_pg.start(bash_cmd(recorder_cmd))
 
-        self.teaching = True
-        self.btn_teach.configure(text="Stop Teach (Save)")
-        self.status_var.set("Recording… Move arm by hand to teach.")
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.status_var.set("Arming recorder... please wait before moving the robot.")
         self._refresh_controls()
+        self.after(100, self._poll_teach_startup)
 
     def stop_teach(self):
+        if self.teach_arming:
+            self._abort_pending_teach_start("Teach start canceled before recorder became ready.")
+            return
         if self.gripper_busy:
             self._append_log("Waiting for active gripper command to finish before saving recording...")
             deadline = time.time() + GRIPPER_ACTION_FINISH_TIMEOUT_SEC
@@ -450,10 +550,14 @@ class FR3TeachRunGUI(tk.Tk):
         self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
+        self.teach_arming = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
         self.current_playback_proc = None
         self.recorded_gripper_events = []
+        self.teach_start_deadline = None
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
         if crashed_reason:
@@ -867,12 +971,16 @@ class FR3TeachRunGUI(tk.Tk):
         self.gripper_pg.clear_finished()
         self.teaching = False
         self.gravity_mode = False
+        self.teach_arming = False
         self.current_playback_proc = None
         self.running = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
         self.current_playback_proc = None
         self.recorded_gripper_events = []
+        self.teach_start_deadline = None
+        self.teach_recorder_ready = False
+        self.teach_recorder_topic = None
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_run.configure(text="Run Trajectory")
