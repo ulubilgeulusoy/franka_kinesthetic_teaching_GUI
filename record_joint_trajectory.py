@@ -20,6 +20,7 @@ JOINT_STATE_TOPICS = [
     '/joint_states',
 ]
 TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATE_TOPICS)}
+TOPIC_SELECTION_TIMEOUT_SEC = 1.5
 
 class JointRecorder(Node):
     def __init__(self):
@@ -37,6 +38,32 @@ class JointRecorder(Node):
         self.joint_data = []
         self.start_time = None
         self.active_joint_topic = None
+        self.pending_samples = {}
+        self.selection_started_ns = self.get_clock().now().nanoseconds
+        self.selection_timer = self.create_timer(0.1, self._attempt_topic_selection)
+
+    def _attempt_topic_selection(self):
+        if self.active_joint_topic is not None:
+            return
+
+        if '/NS_1/franka/joint_states' in self.pending_samples:
+            self._activate_joint_topic('/NS_1/franka/joint_states')
+            return
+
+        elapsed_sec = (self.get_clock().now().nanoseconds - self.selection_started_ns) / 1e9
+        if elapsed_sec < TOPIC_SELECTION_TIMEOUT_SEC or not self.pending_samples:
+            return
+
+        best_topic = min(self.pending_samples, key=lambda topic: TOPIC_PRIORITY[topic])
+        self._activate_joint_topic(best_topic)
+
+    def _activate_joint_topic(self, source_topic):
+        if self.active_joint_topic is not None:
+            return
+        self.active_joint_topic = source_topic
+        self.start_time = self.get_clock().now().nanoseconds
+        self.get_logger().info(f"Recording joint states from {source_topic}")
+        self.selection_timer.cancel()
 
     def listener_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
@@ -44,20 +71,16 @@ class JointRecorder(Node):
         if missing:
             return
 
+        ordered_positions = [joint_map[joint_name] for joint_name in ARM_JOINT_NAMES]
         if self.active_joint_topic is None:
-            self.active_joint_topic = source_topic
-            self.start_time = self.get_clock().now().nanoseconds
-            self.get_logger().info(f"Recording joint states from {source_topic}")
-        elif TOPIC_PRIORITY[source_topic] < TOPIC_PRIORITY[self.active_joint_topic]:
-            self.active_joint_topic = source_topic
-            self.start_time = self.get_clock().now().nanoseconds
-            self.joint_data = []
-            self.get_logger().info(f"Switching recording joint state source to preferred topic {source_topic}")
-        elif source_topic != self.active_joint_topic:
+            self.pending_samples[source_topic] = ordered_positions
+            self._attempt_topic_selection()
+            return
+
+        if source_topic != self.active_joint_topic:
             return
 
         timestamp = self.get_clock().now().nanoseconds - self.start_time
-        ordered_positions = [joint_map[joint_name] for joint_name in ARM_JOINT_NAMES]
         self.joint_data.append([timestamp] + ordered_positions)
 
     def save_to_csv(self, filename):
