@@ -64,10 +64,16 @@ It brings up:
 - `controller_manager` / `ros2_control_node`
 - `joint_state_publisher`
 - `joint_state_broadcaster`
-- `gravity_compensation_example_controller`
 - the Franka gripper launch, if `load_gripper` is enabled
 
 It does not bring up the full MoveIt playback stack.
+
+When launched from the GUI in teach mode, this launch can now start in a staged way:
+- first bring up robot state and controllers without unlocking the arm
+- then let the recorder latch onto the preferred Franka joint-state topic
+- only after that spawn `gravity_compensation_example_controller`
+
+When launched from the GUI in gravity mode, the gravity controller is still spawned immediately.
 
 The teach config currently used by the GUI is [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml), which sets:
 - namespace `NS_1`
@@ -87,14 +93,16 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 ### Teach mode
 
-- Starts the minimal teach/gravity launch automatically if it is not already running
+- Starts the minimal teach bringup automatically if it is not already running
 - Records joint motion while the arm is moved by hand
 - Prompts for an optional CSV filename before recording starts
 - Uses a timestamped filename if you leave the prompt blank
 - Records GUI gripper button presses as timestamped `open` and `close` events
-- Appends those gripper events to the CSV when teach mode stops
+- Merges confirmed gripper events into the CSV in timestamp order when teach mode stops
 - Uses the already-running gripper action server from the teach/gravity stack
 - Avoids a separate gripper connection while arm control is active
+- Waits for the recorder to lock onto `/NS_1/franka/joint_states` before unlocking the arm
+- Refuses to start teach if the recorder latches onto a fallback joint-state topic instead of the preferred Franka topic
 
 ### Gravity mode
 
@@ -119,6 +127,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - Smooths recorded waypoints during playback
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
 - Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
+- Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
 
 ## Requirements
 
@@ -140,6 +149,7 @@ Main user-editable settings live in [`franka_teach_run_gui_v2.py`](/home/parc/fr
 Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml).
 
 Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
+Recorder topic-selection safeguards live in [`record_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/record_joint_trajectory.py).
 
 ## Running
 
@@ -155,10 +165,14 @@ cd ~/franka_kinesthetic_teaching_GUI
 1. Optionally click `Start Gravity Mode` if you want gravity compensation without recording yet.
 2. Click `Start Teach (Record)`.
 3. Optionally enter a custom CSV filename, or leave it blank for a timestamped default.
-4. Wait for the minimal teach/gravity bringup to become active if it is not already running.
-5. Move the arm by hand to demonstrate the motion.
+4. Wait until the GUI log shows that the recorder is ready and gravity compensation has been enabled.
+5. Only then move the arm by hand to demonstrate the motion.
 6. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions recorded.
 7. Click `Stop Teach (Save)`.
+
+Important:
+- Do not start moving the arm immediately after pressing `Start Teach (Record)`.
+- The GUI now intentionally keeps the arm locked until the recorder is ready on `/NS_1/franka/joint_states`.
 
 ### Play back a trajectory
 
@@ -204,10 +218,17 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 - Playback waits for a complete joint-state sample before publishing
 - Playback also waits for at least one subscriber on a trajectory topic
 - If the current pose is farther than `TOLERANCE = 0.05` rad from the recorded start, the player inserts a blend-in segment
+- If playback only sees a fallback joint-state topic first, it briefly waits for the preferred Franka joint-state topic before starting
+- The blend uses a smoothstep easing profile to soften startup motion
 - Blend duration is bounded by:
-  `MIN_BLEND_TIME_SEC = 0.75`
-  `MAX_BLEND_TIME_SEC = 6.0`
-  `BLEND_SPEED_RAD_PER_SEC = 0.35`
+  `MIN_BLEND_TIME_SEC = 1.5`
+  `MAX_BLEND_TIME_SEC = 12.0`
+  `BLEND_SPEED_RAD_PER_SEC = 0.20`
+- Additional far-start slowdown is applied with:
+  `FAR_START_ERROR_RAD = 0.35`
+  `FAR_START_SLOWDOWN_GAIN = 2.5`
+- Very small startup mismatches below `START_BLEND_EPSILON_RAD = 0.005` rad do not trigger a blend
+- When the current pose is already near the recorded start, playback inserts a short `INITIAL_SETTLE_SEC = 0.10` hold before the recorded motion proceeds
 
 ### Gripper replay behavior
 
@@ -227,6 +248,8 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ### Recording
 
 - Subscribes, in priority order: `/NS_1/franka/joint_states`, `/NS_1/joint_states`, `/joint_states`
+- Prefers `/NS_1/franka/joint_states` and waits before falling back
+- Rejects fallback startup samples that only match the default-looking pose `0, 0, 0, -1.59695, 0, 2.5307, 0`
 
 ### Manual GUI gripper commands
 
@@ -239,10 +262,11 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ## Known assumptions and caveats
 
 - The recorder now prefers `/NS_1/franka/joint_states` so it records the real robot state instead of accidentally latching onto startup/default publisher values
+- The GUI now delays gravity-compensation unlock during teach until the recorder is ready, so early user motion does not get lost before recording is active
 - The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
 - The recorder maps joint states by name and stores only the 7 FR3 arm joints in explicit order
 - Older CSV files recorded before that change may still contain ambiguous unnamed joint columns and may not replay correctly
-- The GUI uses fixed startup delays in a few places, so slow systems may still need more time
+- If teach startup times out waiting for `/NS_1/franka/joint_states`, the GUI aborts teach start instead of unlocking the arm on a fallback topic
 - The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node
 - CSV files are saved into the repo directory by default unless you provide another path
 - Playback can still trigger a Franka reflex stop such as `power_limit_violation` if the current pose is too far from the recording start, the path is too aggressive, or the robot is under load
