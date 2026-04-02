@@ -14,24 +14,46 @@ ARM_JOINT_NAMES = [
     'fr3_joint6',
     'fr3_joint7',
 ]
+JOINT_STATE_TOPICS = [
+    '/NS_1/franka/joint_states',
+    '/NS_1/joint_states',
+    '/joint_states',
+]
+TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATE_TOPICS)}
 
 class JointRecorder(Node):
     def __init__(self):
         super().__init__('joint_recorder')
-        # Subscribe to the correct joint_states topic with namespace
-        self.subscription = self.create_subscription(
-            JointState,
-            '/NS_1/joint_states',
-            self.listener_callback,
-            10)
+        self.subscriptions = []
+        for topic in JOINT_STATE_TOPICS:
+            self.subscriptions.append(
+                self.create_subscription(
+                    JointState,
+                    topic,
+                    lambda msg, source_topic=topic: self.listener_callback(msg, source_topic),
+                    10,
+                )
+            )
         self.joint_data = []
-        self.start_time = self.get_clock().now().nanoseconds
+        self.start_time = None
+        self.active_joint_topic = None
 
-    def listener_callback(self, msg):
+    def listener_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
         missing = [joint_name for joint_name in ARM_JOINT_NAMES if joint_name not in joint_map]
         if missing:
-            self.get_logger().warn(f"Skipping joint sample; missing expected arm joints: {missing}")
+            return
+
+        if self.active_joint_topic is None:
+            self.active_joint_topic = source_topic
+            self.start_time = self.get_clock().now().nanoseconds
+            self.get_logger().info(f"Recording joint states from {source_topic}")
+        elif TOPIC_PRIORITY[source_topic] < TOPIC_PRIORITY[self.active_joint_topic]:
+            self.active_joint_topic = source_topic
+            self.start_time = self.get_clock().now().nanoseconds
+            self.joint_data = []
+            self.get_logger().info(f"Switching recording joint state source to preferred topic {source_topic}")
+        elif source_topic != self.active_joint_topic:
             return
 
         timestamp = self.get_clock().now().nanoseconds - self.start_time

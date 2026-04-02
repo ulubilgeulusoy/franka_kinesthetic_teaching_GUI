@@ -222,11 +222,11 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ### Playback
 
 - Publishes: `/NS_1/fr3_arm_controller/joint_trajectory` and `/fr3_arm_controller/joint_trajectory`
-- Subscribes: `/NS_1/joint_states` and `/joint_states`
+- Subscribes, in priority order: `/NS_1/franka/joint_states`, `/NS_1/joint_states`, `/joint_states`
 
 ### Recording
 
-- Subscribes: `/NS_1/joint_states`
+- Subscribes, in priority order: `/NS_1/franka/joint_states`, `/NS_1/joint_states`, `/joint_states`
 
 ### Manual GUI gripper commands
 
@@ -238,9 +238,9 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 
 ## Known assumptions and caveats
 
-- The recorder subscribes directly to `/NS_1/joint_states`
+- The recorder now prefers `/NS_1/franka/joint_states` so it records the real robot state instead of accidentally latching onto startup/default publisher values
 - The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
-- The recorder now maps `/NS_1/joint_states` by name and stores only the 7 FR3 arm joints in explicit order
+- The recorder maps joint states by name and stores only the 7 FR3 arm joints in explicit order
 - Older CSV files recorded before that change may still contain ambiguous unnamed joint columns and may not replay correctly
 - The GUI uses fixed startup delays in a few places, so slow systems may still need more time
 - The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node

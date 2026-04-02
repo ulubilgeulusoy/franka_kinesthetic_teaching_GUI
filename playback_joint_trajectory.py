@@ -42,8 +42,13 @@ NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
 JOINT_STATES_TOPICS = ["/joint_states"]
 TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
 if NAMESPACE_PREFIX:
-    JOINT_STATES_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/joint_states")
+    JOINT_STATES_TOPICS = [
+        f"{NAMESPACE_PREFIX}/franka/joint_states",
+        f"{NAMESPACE_PREFIX}/joint_states",
+        *JOINT_STATES_TOPICS,
+    ]
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
+TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATES_TOPICS)}
 GRIPPER_MOVE_ACTION_CANDIDATES = [
     "/franka_gripper/move",
     f"/{TEACH_NAMESPACE}/franka_gripper/move",
@@ -67,12 +72,19 @@ class SmartTrajectoryPlayer(Node):
             self.create_publisher(JointTrajectory, topic, 10)
             for topic in TRAJECTORY_TOPICS
         ]
-        self.joint_state_subscriptions = [
-            self.create_subscription(JointState, topic, self.joint_state_callback, 10)
-            for topic in JOINT_STATES_TOPICS
-        ]
+        self.joint_state_subscriptions = []
+        for topic in JOINT_STATES_TOPICS:
+            self.joint_state_subscriptions.append(
+                self.create_subscription(
+                    JointState,
+                    topic,
+                    lambda msg, source_topic=topic: self.joint_state_callback(msg, source_topic),
+                    10,
+                )
+            )
 
         self.actual_positions = None
+        self.active_joint_topic = None
         self.full_sent = False
         self.start_time_ns = self.get_clock().now().nanoseconds
         self.execution_start_time = None
@@ -157,11 +169,18 @@ class SmartTrajectoryPlayer(Node):
 
         return filtered
 
-    def joint_state_callback(self, msg):
+    def joint_state_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
         missing = [j for j in JOINT_NAMES if j not in joint_map]
         if missing:
-            self.get_logger().warn(f"Missing joints in joint state sample: {missing}")
+            return
+        if self.active_joint_topic is None:
+            self.active_joint_topic = source_topic
+            self.get_logger().info(f"Using joint states from {source_topic}")
+        elif TOPIC_PRIORITY[source_topic] < TOPIC_PRIORITY[self.active_joint_topic]:
+            self.active_joint_topic = source_topic
+            self.get_logger().info(f"Switching joint state source to preferred topic {source_topic}")
+        elif source_topic != self.active_joint_topic:
             return
         self.actual_positions = [joint_map[j] for j in JOINT_NAMES]
 
