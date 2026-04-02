@@ -25,9 +25,9 @@ TOPIC_SELECTION_TIMEOUT_SEC = 1.5
 class JointRecorder(Node):
     def __init__(self):
         super().__init__('joint_recorder')
-        self.subscriptions = []
+        self.joint_state_subscriptions = []
         for topic in JOINT_STATE_TOPICS:
-            self.subscriptions.append(
+            self.joint_state_subscriptions.append(
                 self.create_subscription(
                     JointState,
                     topic,
