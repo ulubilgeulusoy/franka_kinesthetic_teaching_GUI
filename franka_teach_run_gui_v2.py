@@ -481,7 +481,10 @@ class FR3TeachRunGUI(tk.Tk):
             parent=self,
         )
         if custom_name is None:
-            custom_name = ""
+            self._append_log("Teach start canceled from filename dialog.")
+            self.status_var.set("Teach start canceled.")
+            self._refresh_controls()
+            return
         custom_name = custom_name.strip()
 
         if not self.gravity_mode:
