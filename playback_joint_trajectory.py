@@ -23,8 +23,10 @@ WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
 INITIAL_SETTLE_SEC = 0.10
-SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
-MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
+SMOOTHING_WINDOW = 3  # odd number of samples for moving-average smoothing
+MIN_POINT_DT = 0.02  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
+MAX_SMOOTHING_DEVIATION_RAD = 0.01  # keep smoothed points close to the taught path
+CURVATURE_PRESERVE_THRESHOLD_RAD = 0.015  # reduce smoothing around tight turns / fine features
 MIN_BLEND_TIME_SEC = 1.5
 MAX_BLEND_TIME_SEC = 12.0
 BLEND_SPEED_RAD_PER_SEC = 0.20
@@ -155,13 +157,30 @@ class SmartTrajectoryPlayer(Node):
 
         smoothed = []
         for idx, (dt, _) in enumerate(raw_points):
+            original_positions = raw_points[idx][1]
             start = max(0, idx - half_window)
             end = min(len(raw_points), idx + half_window + 1)
             span = raw_points[start:end]
+            curvature = self.local_path_curvature(raw_points, idx)
+            preserve_detail = curvature >= CURVATURE_PRESERVE_THRESHOLD_RAD
 
             avg_positions = []
             for joint_idx in range(len(JOINT_NAMES)):
-                avg_positions.append(sum(p[1][joint_idx] for p in span) / len(span))
+                if preserve_detail:
+                    smoothed_position = original_positions[joint_idx]
+                else:
+                    weighted_sum = 0.0
+                    total_weight = 0.0
+                    for span_idx, (_, span_positions) in enumerate(span):
+                        distance_from_center = abs((start + span_idx) - idx)
+                        weight = float(half_window + 1 - distance_from_center)
+                        weighted_sum += span_positions[joint_idx] * weight
+                        total_weight += weight
+                    smoothed_position = weighted_sum / total_weight
+
+                lower_bound = original_positions[joint_idx] - MAX_SMOOTHING_DEVIATION_RAD
+                upper_bound = original_positions[joint_idx] + MAX_SMOOTHING_DEVIATION_RAD
+                avg_positions.append(min(max(smoothed_position, lower_bound), upper_bound))
             smoothed.append((dt, avg_positions))
 
         filtered = [smoothed[0]]
@@ -175,6 +194,21 @@ class SmartTrajectoryPlayer(Node):
             filtered.append(smoothed[-1])
 
         return filtered
+
+    def local_path_curvature(self, points, idx):
+        if idx <= 0 or idx >= len(points) - 1:
+            return 0.0
+
+        previous_positions = points[idx - 1][1]
+        current_positions = points[idx][1]
+        next_positions = points[idx + 1][1]
+
+        return max(
+            abs(next_position - 2.0 * current_position + previous_position)
+            for previous_position, current_position, next_position in zip(
+                previous_positions, current_positions, next_positions
+            )
+        )
 
     def joint_state_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
