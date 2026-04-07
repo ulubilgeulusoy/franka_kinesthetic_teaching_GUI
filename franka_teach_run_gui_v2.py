@@ -169,6 +169,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.ros_init_lock = threading.Lock()
         self.gripper_action_lock = threading.Lock()
         self.gripper_busy = False
+        self.gripper_move_action_name = None
+        self.gripper_grasp_action_name = None
         self.current_recording_filename = None
         self.current_playback_proc = None
         self.teach_start_time_ns = None
@@ -657,21 +659,33 @@ class FR3TeachRunGUI(tk.Tk):
         time.sleep(0.2)
         self.gripper_node_pg.terminate_all(sig=signal.SIGKILL)
         self.gripper_node_pg.clear_finished()
+        self.gripper_move_action_name = None
+        self.gripper_grasp_action_name = None
 
 
-    def wait_for_gripper_action_server(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
+    def wait_for_gripper_action_server(
+        self,
+        action_type,
+        candidates,
+        timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC,
+        preferred_action_name: str | None = None,
+    ):
         self.ensure_ros_client_ready()
         node = rclpy.create_node(f"gripper_wait_client_{int(time.time() * 1000)}")
         deadline = time.time() + timeout_sec
+        ordered_candidates = []
+        if preferred_action_name and preferred_action_name in candidates:
+            ordered_candidates.append(preferred_action_name)
+        ordered_candidates.extend(candidate for candidate in candidates if candidate not in ordered_candidates)
         try:
             while time.time() < deadline:
-                for candidate in candidates:
+                for candidate in ordered_candidates:
                     trial_client = ActionClient(node, action_type, candidate)
-                    if trial_client.wait_for_server(timeout_sec=0.5):
+                    if trial_client.wait_for_server(timeout_sec=0.15):
                         trial_client.destroy()
                         return candidate
                     trial_client.destroy()
-                time.sleep(0.1)
+                time.sleep(0.05)
         finally:
             node.destroy_node()
         return None
@@ -689,18 +703,18 @@ class FR3TeachRunGUI(tk.Tk):
 
     def get_gripper_move_action_candidates(self):
         return [
-            "/franka_gripper/move",
             f"/{TEACH_NAMESPACE}/franka_gripper/move",
-            "/fr3_gripper/move",
+            "/franka_gripper/move",
             f"/{TEACH_NAMESPACE}/fr3_gripper/move",
+            "/fr3_gripper/move",
         ]
 
     def get_gripper_grasp_action_candidates(self):
         return [
-            "/franka_gripper/grasp",
             f"/{TEACH_NAMESPACE}/franka_gripper/grasp",
-            "/fr3_gripper/grasp",
+            "/franka_gripper/grasp",
             f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
+            "/fr3_gripper/grasp",
         ]
 
     def should_use_teach_gripper_server(self):
@@ -718,7 +732,12 @@ class FR3TeachRunGUI(tk.Tk):
                 candidates = self.get_gripper_move_action_candidates()
                 launched_standalone_node = False
                 if self.should_use_teach_gripper_server():
-                    action_name = self.wait_for_gripper_action_server(Move, candidates)
+                    self.line_queue.put("Hold the arm steady briefly while the gripper command is prepared...")
+                    action_name = self.wait_for_gripper_action_server(
+                        Move,
+                        candidates,
+                        preferred_action_name=self.gripper_move_action_name,
+                    )
                     if action_name is None:
                         failure_hint = f" Last failure: {self.last_teach_failure}" if self.last_teach_failure else ""
                         self.line_queue.put(
@@ -732,7 +751,11 @@ class FR3TeachRunGUI(tk.Tk):
                     self.shutdown_gripper_node()
                     self.launch_gripper_node()
                     launched_standalone_node = True
-                    action_name = self.wait_for_gripper_action_server(Move, candidates)
+                    action_name = self.wait_for_gripper_action_server(
+                        Move,
+                        candidates,
+                        preferred_action_name=self.gripper_move_action_name,
+                    )
                 if action_name is None:
                     self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
                     if launched_standalone_node:
@@ -747,11 +770,13 @@ class FR3TeachRunGUI(tk.Tk):
                 try:
                     client = ActionClient(node, Move, action_name)
                     if not client.wait_for_server(timeout_sec=1.0):
+                        self.gripper_move_action_name = None
                         self.line_queue.put(
                             f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
                         )
                         return
 
+                    self.gripper_move_action_name = action_name
                     self.line_queue.put(f"Sending {label} command to {action_name}")
                     goal_msg = Move.Goal()
                     goal_msg.width = width
@@ -798,7 +823,12 @@ class FR3TeachRunGUI(tk.Tk):
                 candidates = self.get_gripper_grasp_action_candidates()
                 launched_standalone_node = False
                 if self.should_use_teach_gripper_server():
-                    action_name = self.wait_for_gripper_action_server(Grasp, candidates)
+                    self.line_queue.put("Hold the arm steady briefly while the gripper command is prepared...")
+                    action_name = self.wait_for_gripper_action_server(
+                        Grasp,
+                        candidates,
+                        preferred_action_name=self.gripper_grasp_action_name,
+                    )
                     if action_name is None:
                         failure_hint = f" Last failure: {self.last_teach_failure}" if self.last_teach_failure else ""
                         self.line_queue.put(
@@ -812,7 +842,11 @@ class FR3TeachRunGUI(tk.Tk):
                     self.shutdown_gripper_node()
                     self.launch_gripper_node()
                     launched_standalone_node = True
-                    action_name = self.wait_for_gripper_action_server(Grasp, candidates)
+                    action_name = self.wait_for_gripper_action_server(
+                        Grasp,
+                        candidates,
+                        preferred_action_name=self.gripper_grasp_action_name,
+                    )
                 if action_name is None:
                     self.line_queue.put("No gripper action server found after waiting. Expected one of: " + ", ".join(candidates))
                     if launched_standalone_node:
@@ -827,11 +861,13 @@ class FR3TeachRunGUI(tk.Tk):
                 try:
                     client = ActionClient(node, Grasp, action_name)
                     if not client.wait_for_server(timeout_sec=1.0):
+                        self.gripper_grasp_action_name = None
                         self.line_queue.put(
                             f"Gripper action server disappeared before sending {label.lower()} command: {action_name}"
                         )
                         return
 
+                    self.gripper_grasp_action_name = action_name
                     self.line_queue.put(f"Sending {label} command to {action_name}")
                     goal_msg = Grasp.Goal()
                     goal_msg.width = width
