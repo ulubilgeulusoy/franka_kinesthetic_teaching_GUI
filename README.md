@@ -49,7 +49,7 @@ The GUI exposes these actions:
 - `franka_teach_minimal.launch.py`: reduced teach/gravity launch used by the GUI
 - `franka_teach.config.yaml`: robot config passed into the minimal teach launch
 - `record_joint_trajectory.py`: records joint states to CSV
-- `playback_joint_trajectory.py`: loads a CSV, smooths it, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
+- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
 
 ## How the GUI uses the launch files
 
@@ -209,8 +209,10 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 
 ### Smoothing and downsampling
 
-- A moving average is applied with `SMOOTHING_WINDOW = 5`
-- Waypoints closer together than `MIN_POINT_DT = 0.03` seconds are skipped
+- A light moving average is applied with `SMOOTHING_WINDOW = 3`
+- Waypoints closer together than `MIN_POINT_DT = 0.02` seconds are skipped
+- Smoothing is bounded so each replayed joint sample stays close to the taught path with `MAX_SMOOTHING_DEVIATION_RAD = 0.002`
+- Tight local path features are preserved by reducing smoothing when curvature exceeds `CURVATURE_PRESERVE_THRESHOLD_RAD = 0.008`
 - Published trajectory points include velocities computed from neighboring points
 
 ### Blend-in behavior
