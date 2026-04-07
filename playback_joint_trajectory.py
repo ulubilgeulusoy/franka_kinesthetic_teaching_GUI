@@ -31,8 +31,6 @@ BLEND_SPEED_RAD_PER_SEC = 0.20
 FAR_START_ERROR_RAD = 0.35
 FAR_START_SLOWDOWN_GAIN = 2.5
 MIN_BLEND_STEPS = 10
-MAX_STARTUP_STAGE_ERROR_RAD = 0.20
-STARTUP_STAGE_PAUSE_SEC = 0.30
 MIN_SEGMENT_DT = 1e-3
 GRIPPER_OPEN_WIDTH = 0.08
 GRIPPER_CLOSE_WIDTH = 0.0
@@ -281,68 +279,31 @@ class SmartTrajectoryPlayer(Node):
 
     def build_playback_timeline(self):
         start_error = self.max_joint_error(self.actual_positions, self.start_position)
+        blend_time = self.compute_blend_time(start_error)
         current_time = 0.0
-        startup_segments = []
+        blend_points = []
 
         if start_error > START_BLEND_EPSILON_RAD:
-            startup_stage_count = max(1, int((start_error / MAX_STARTUP_STAGE_ERROR_RAD) + 0.999999))
-            self.get_logger().info(
-                f"Current pose differs from trajectory start by {start_error:.3f} rad; "
-                f"using {startup_stage_count} startup blend stage(s)"
-            )
-
-            previous_positions = self.actual_positions
-            for stage_idx in range(1, startup_stage_count + 1):
-                stage_alpha = stage_idx / startup_stage_count
-                stage_target = [
-                    current + stage_alpha * (target - current)
+            blend_steps = max(MIN_BLEND_STEPS, int(blend_time / MIN_POINT_DT))
+            blend_step_dt = max(MIN_POINT_DT, blend_time / blend_steps)
+            for step_idx in range(1, blend_steps + 1):
+                alpha = step_idx / blend_steps
+                # Smoothstep gives a zero-velocity start/end to reduce startup twitch.
+                eased_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+                positions = [
+                    current + eased_alpha * (target - current)
                     for current, target in zip(self.actual_positions, self.start_position)
                 ]
-                stage_error = self.max_joint_error(previous_positions, stage_target)
-                stage_blend_time = self.compute_blend_time(stage_error)
-                stage_steps = max(MIN_BLEND_STEPS, int(stage_blend_time / MIN_POINT_DT))
-                stage_step_dt = max(MIN_POINT_DT, stage_blend_time / stage_steps)
-                stage_points = []
-
-                for step_idx in range(1, stage_steps + 1):
-                    alpha = step_idx / stage_steps
-                    # Smoothstep gives a zero-velocity start/end to reduce startup twitch.
-                    eased_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
-                    positions = [
-                        start + eased_alpha * (target - start)
-                        for start, target in zip(previous_positions, stage_target)
-                    ]
-                    current_time += stage_step_dt
-                    stage_points.append((current_time, positions))
-
-                if stage_points:
-                    segment_start = stage_points[0][0]
-                    startup_segments.append({
-                        'type': 'trajectory',
-                        'absolute_points': stage_points,
-                        'timed_points': [(t - segment_start, p) for t, p in stage_points],
-                        'duration': stage_points[-1][0] - segment_start,
-                        'startup_stage': stage_idx,
-                        'startup_stage_count': startup_stage_count,
-                        'stage_error': stage_error,
-                    })
-
-                previous_positions = stage_target
-                if stage_idx < startup_stage_count:
-                    current_time += STARTUP_STAGE_PAUSE_SEC
-
+                current_time += blend_step_dt
+                blend_points.append((current_time, positions))
             self.get_logger().info(
-                f"Startup move-to-start will pause {STARTUP_STAGE_PAUSE_SEC:.2f} s between stages"
+                f"Current pose differs from trajectory start by {start_error:.3f} rad; "
+                f"blending over {blend_time:.2f} s"
             )
         else:
             self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
             current_time = INITIAL_SETTLE_SEC
-            startup_segments.append({
-                'type': 'trajectory',
-                'absolute_points': [(current_time, list(self.start_position))],
-                'timed_points': [(0.0, list(self.start_position))],
-                'duration': 0.0,
-            })
+            blend_points.append((current_time, list(self.start_position)))
 
         event_entries = [
             {'type': 'gripper', 'time': event_time, 'event_name': event_name}
@@ -353,9 +314,7 @@ class SmartTrajectoryPlayer(Node):
         segments = []
         previous_recorded_dt = None
         event_index = 0
-        current_segment_points = []
-
-        segments.extend(startup_segments)
+        current_segment_points = list(blend_points)
 
         for dt, positions in self.recorded_points:
             while event_index < len(event_entries) and dt >= event_entries[event_index]['time']:
@@ -449,29 +408,11 @@ class SmartTrajectoryPlayer(Node):
                         current_positions,
                     )
                     if duration > 0.0:
-                        if 'startup_stage' in entry:
-                            self.get_logger().info(
-                                f"Publishing startup stage {entry['startup_stage']}/{entry['startup_stage_count']} "
-                                f"with {len(entry['timed_points'])} point(s) over {duration:.2f} s "
-                                f"(stage error {entry['stage_error']:.3f} rad)"
-                            )
-                        else:
-                            self.get_logger().info(
-                                f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
-                            )
-                        sleep_duration = duration + PLAYBACK_COMPLETION_BUFFER_SEC
-                        if 'startup_stage' in entry and entry['startup_stage'] < entry['startup_stage_count']:
-                            sleep_duration += STARTUP_STAGE_PAUSE_SEC
-                            self.get_logger().info(
-                                f"Pausing {STARTUP_STAGE_PAUSE_SEC:.2f} s before next startup stage"
-                            )
-                        time.sleep(sleep_duration)
-                        total_runtime += sleep_duration
-                        current_positions = entry['timed_points'][-1][1]
-                    else:
                         self.get_logger().info(
                             f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
                         )
+                        time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
+                        total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
                         current_positions = entry['timed_points'][-1][1]
                 elif entry['type'] == 'gripper':
                     self.get_logger().info(
