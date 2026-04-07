@@ -25,8 +25,8 @@ GRIPPER_EVENT_SETTLE_SEC = 0.75
 INITIAL_SETTLE_SEC = 0.10
 SMOOTHING_WINDOW = 3  # odd number of samples for moving-average smoothing
 MIN_POINT_DT = 0.02  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
-MAX_SMOOTHING_DEVIATION_RAD = 0.01  # keep smoothed points close to the taught path
-CURVATURE_PRESERVE_THRESHOLD_RAD = 0.015  # reduce smoothing around tight turns / fine features
+MAX_SMOOTHING_DEVIATION_RAD = 0.002  # keep replay very close to the taught path
+CURVATURE_PRESERVE_THRESHOLD_RAD = 0.008  # reduce smoothing around tight local features
 MIN_BLEND_TIME_SEC = 1.5
 MAX_BLEND_TIME_SEC = 12.0
 BLEND_SPEED_RAD_PER_SEC = 0.20
@@ -156,23 +156,22 @@ class SmartTrajectoryPlayer(Node):
         half_window = window // 2
 
         smoothed = []
-        for idx, (dt, _) in enumerate(raw_points):
-            original_positions = raw_points[idx][1]
+        for idx, (dt, original_positions) in enumerate(raw_points):
             start = max(0, idx - half_window)
             end = min(len(raw_points), idx + half_window + 1)
             span = raw_points[start:end]
             curvature = self.local_path_curvature(raw_points, idx)
-            preserve_detail = curvature >= CURVATURE_PRESERVE_THRESHOLD_RAD
 
             avg_positions = []
             for joint_idx in range(len(JOINT_NAMES)):
-                if preserve_detail:
+                if curvature >= CURVATURE_PRESERVE_THRESHOLD_RAD:
                     smoothed_position = original_positions[joint_idx]
                 else:
                     weighted_sum = 0.0
                     total_weight = 0.0
                     for span_idx, (_, span_positions) in enumerate(span):
-                        distance_from_center = abs((start + span_idx) - idx)
+                        source_idx = start + span_idx
+                        distance_from_center = abs(source_idx - idx)
                         weight = float(half_window + 1 - distance_from_center)
                         weighted_sum += span_positions[joint_idx] * weight
                         total_weight += weight
@@ -209,7 +208,6 @@ class SmartTrajectoryPlayer(Node):
                 previous_positions, current_positions, next_positions
             )
         )
-
     def joint_state_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
         missing = [j for j in JOINT_NAMES if j not in joint_map]
