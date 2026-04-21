@@ -2,6 +2,20 @@
 
 A small Tkinter desktop application for kinesthetic teaching and trajectory playback on a Franka Research 3 (FR3) with ROS 2.
 
+## Validated environment
+
+This branch is currently set up and maintained for a native Ubuntu 22.04 + ROS 2 Humble workflow.
+
+- OS: Ubuntu 22.04 LTS
+- ROS distro: ROS 2 Humble
+- Python: Python 3
+- Robot: Franka Research 3 (FR3)
+
+Important notes:
+- This branch is the Humble-oriented branch and does not track the Jazzy setup from `main`.
+- `run_gui.sh` is intended to be the entry point and should source `/opt/ros/humble/setup.bash` and your local Franka workspace.
+- A realtime kernel is still recommended for smoother control behavior, even though the GUI can run without perfect realtime tuning.
+
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
@@ -29,7 +43,7 @@ The GUI exposes these actions:
 - `franka_teach_minimal.launch.py`: reduced teach/gravity launch used by the GUI
 - `franka_teach.config.yaml`: robot config passed into the minimal teach launch
 - `record_joint_trajectory.py`: records joint states to CSV
-- `playback_joint_trajectory.py`: loads a CSV, smooths it, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
+- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
 
 ## How the GUI uses the launch files
 
@@ -59,7 +73,7 @@ The teach config currently used by the GUI is [`franka_teach.config.yaml`](/home
 ### Playback launch
 
 When you click `Run Trajectory`, the GUI launches:
-- `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1`
+- `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1 arm_id:=fr3`
 
 After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py) on the selected CSV.
 
@@ -67,12 +81,12 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 ### Teach mode
 
-- Starts the minimal teach/gravity launch automatically if it is not already running
+- Starts the minimal teach bringup automatically if it is not already running
 - Records joint motion while the arm is moved by hand
 - Prompts for an optional CSV filename before recording starts
 - Uses a timestamped filename if you leave the prompt blank
 - Records GUI gripper button presses as timestamped `open` and `close` events
-- Appends those gripper events to the CSV when teach mode stops
+- Merges confirmed gripper events into the CSV in timestamp order when teach mode stops
 - Uses the already-running gripper action server from the teach/gravity stack
 - Avoids a separate gripper connection while arm control is active
 
@@ -99,14 +113,17 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - Smooths recorded waypoints during playback
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
 - Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
+- Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
 
 ## Requirements
 
+- Ubuntu 22.04
 - ROS 2 Humble
 - `franka_ros2` packages installed and configured
 - Python 3
 - Tkinter for Python: `sudo apt install python3-tk`
 - A working FR3 setup with FCI enabled and reachable on your network
+- Recommended: a realtime kernel for better runtime behavior
 
 ## Configuration
 
@@ -118,6 +135,7 @@ Main user-editable settings live in [`franka_teach_run_gui_v2.py`](/home/parc/fr
 Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml).
 
 Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
+Recorder topic-selection safeguards live in [`record_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/record_joint_trajectory.py).
 
 ## Running
 
@@ -133,8 +151,8 @@ cd ~/franka_kinesthetic_teaching_GUI
 1. Optionally click `Start Gravity Mode` if you want gravity compensation without recording yet.
 2. Click `Start Teach (Record)`.
 3. Optionally enter a custom CSV filename, or leave it blank for a timestamped default.
-4. Wait for the minimal teach/gravity bringup to become active if it is not already running.
-5. Move the arm by hand to demonstrate the motion.
+4. Wait for the recorder to start receiving valid Franka joint states.
+5. Only then move the arm by hand to demonstrate the motion.
 6. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions recorded.
 7. Click `Stop Teach (Save)`.
 
@@ -152,12 +170,12 @@ cd ~/franka_kinesthetic_teaching_GUI
 
 The recorder writes this header:
 
-`timestamp_ns,row_type,event,joint_1,joint_2,joint_3,joint_4,joint_5,joint_6,joint_7`
+`timestamp_ns,row_type,event,fr3_joint1,fr3_joint2,fr3_joint3,fr3_joint4,fr3_joint5,fr3_joint6,fr3_joint7`
 
 Joint samples are stored as:
 - `row_type = joint`
 - `event =` empty
-- `joint_1` through `joint_7` filled with the received joint positions
+- `fr3_joint1` through `fr3_joint7` filled in explicit arm-joint-name order
 
 Recorded GUI gripper actions are stored as:
 - `row_type = gripper`
@@ -173,8 +191,10 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 
 ### Smoothing and downsampling
 
-- A moving average is applied with `SMOOTHING_WINDOW = 5`
-- Waypoints closer together than `MIN_POINT_DT = 0.03` seconds are skipped
+- A light moving average is applied with `SMOOTHING_WINDOW = 3`
+- Waypoints closer together than `MIN_POINT_DT = 0.02` seconds are skipped
+- Smoothing is bounded so each replayed joint sample stays close to the taught path with `MAX_SMOOTHING_DEVIATION_RAD = 0.002`
+- Tight local path features are preserved by reducing smoothing when curvature exceeds `CURVATURE_PRESERVE_THRESHOLD_RAD = 0.008`
 - Published trajectory points include velocities computed from neighboring points
 
 ### Blend-in behavior
@@ -182,10 +202,17 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 - Playback waits for a complete joint-state sample before publishing
 - Playback also waits for at least one subscriber on a trajectory topic
 - If the current pose is farther than `TOLERANCE = 0.05` rad from the recorded start, the player inserts a blend-in segment
+- If playback only sees a fallback joint-state topic first, it briefly waits for the preferred Franka joint-state topic before starting
+- The blend uses a smoothstep easing profile to soften startup motion
 - Blend duration is bounded by:
-  `MIN_BLEND_TIME_SEC = 0.75`
-  `MAX_BLEND_TIME_SEC = 6.0`
-  `BLEND_SPEED_RAD_PER_SEC = 0.35`
+  `MIN_BLEND_TIME_SEC = 1.5`
+  `MAX_BLEND_TIME_SEC = 12.0`
+  `BLEND_SPEED_RAD_PER_SEC = 0.20`
+- Additional far-start slowdown is applied with:
+  `FAR_START_ERROR_RAD = 0.35`
+  `FAR_START_SLOWDOWN_GAIN = 2.5`
+- Very small startup mismatches below `START_BLEND_EPSILON_RAD = 0.005` rad do not trigger a full blend
+- When the current pose is already near the recorded start, playback inserts a short `INITIAL_SETTLE_SEC = 0.10` hold before the recorded motion proceeds
 
 ### Gripper replay behavior
 
@@ -200,11 +227,13 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ### Playback
 
 - Publishes: `/NS_1/fr3_arm_controller/joint_trajectory` and `/fr3_arm_controller/joint_trajectory`
-- Subscribes: `/NS_1/joint_states` and `/joint_states`
+- Subscribes, in priority order: `/NS_1/franka/joint_states`, `/NS_1/joint_states`, `/joint_states`
 
 ### Recording
 
-- Subscribes: `/NS_1/joint_states`
+- Subscribes, in priority order: `/NS_1/franka/joint_states`, `/NS_1/joint_states`, `/joint_states`
+- Prefers `/NS_1/franka/joint_states` and waits before falling back
+- Rejects fallback startup samples that only match the default-looking pose `0, 0, 0, -1.59695, 0, 2.5307, 0`
 
 ### Manual GUI gripper commands
 
@@ -216,9 +245,7 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 
 ## Known assumptions and caveats
 
-- The recorder subscribes directly to `/NS_1/joint_states`
 - The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
-- The recorder stores `msg.position` as received and assumes that order matches the joints you want to replay
 - The GUI uses fixed startup delays in a few places, so slow systems may still need more time
 - The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node
 - CSV files are saved into the repo directory by default unless you provide another path
@@ -230,6 +257,7 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ```bash
 git clone https://github.com/ulubilgeulusoy/franka_kinesthetic_teaching_GUI.git
 cd franka_kinesthetic_teaching_GUI
+git checkout Humble_KT
 ```
 
 ## Acknowledgements

@@ -4,10 +4,11 @@ import threading
 import time
 
 import rclpy
+from franka_msgs.action import Grasp, Move
 from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from franka_msgs.action import Grasp, Move
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -16,15 +17,21 @@ JOINT_NAMES = [
     "fr3_joint4", "fr3_joint5", "fr3_joint6", "fr3_joint7"
 ]
 TOLERANCE = 0.05  # rad
+START_BLEND_EPSILON_RAD = 0.005
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
 PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
 GRIPPER_EVENT_SETTLE_SEC = 0.75
-SMOOTHING_WINDOW = 5  # odd number of samples for moving-average smoothing
-MIN_POINT_DT = 0.03  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
-MIN_BLEND_TIME_SEC = 0.75
-MAX_BLEND_TIME_SEC = 6.0
-BLEND_SPEED_RAD_PER_SEC = 0.35
+INITIAL_SETTLE_SEC = 0.10
+SMOOTHING_WINDOW = 3  # odd number of samples for moving-average smoothing
+MIN_POINT_DT = 0.02  # s, enforce minimum spacing to avoid very abrupt setpoint jumps
+MAX_SMOOTHING_DEVIATION_RAD = 0.002  # keep replay very close to the taught path
+CURVATURE_PRESERVE_THRESHOLD_RAD = 0.008  # reduce smoothing around tight local features
+MIN_BLEND_TIME_SEC = 1.5
+MAX_BLEND_TIME_SEC = 12.0
+BLEND_SPEED_RAD_PER_SEC = 0.20
+FAR_START_ERROR_RAD = 0.35
+FAR_START_SLOWDOWN_GAIN = 2.5
 MIN_BLEND_STEPS = 10
 MIN_SEGMENT_DT = 1e-3
 GRIPPER_OPEN_WIDTH = 0.08
@@ -40,8 +47,15 @@ NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
 JOINT_STATES_TOPICS = ["/joint_states"]
 TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
 if NAMESPACE_PREFIX:
-    JOINT_STATES_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/joint_states")
+    JOINT_STATES_TOPICS = [
+        f"{NAMESPACE_PREFIX}/franka/joint_states",
+        f"{NAMESPACE_PREFIX}/joint_states",
+        *JOINT_STATES_TOPICS,
+    ]
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
+TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATES_TOPICS)}
+PREFERRED_JOINT_STATE_TOPIC = JOINT_STATES_TOPICS[0]
+PREFERRED_TOPIC_GRACE_SEC = 2.0
 GRIPPER_MOVE_ACTION_CANDIDATES = [
     "/franka_gripper/move",
     f"/{TEACH_NAMESPACE}/franka_gripper/move",
@@ -65,12 +79,21 @@ class SmartTrajectoryPlayer(Node):
             self.create_publisher(JointTrajectory, topic, 10)
             for topic in TRAJECTORY_TOPICS
         ]
-        self.joint_state_subscriptions = [
-            self.create_subscription(JointState, topic, self.joint_state_callback, 10)
-            for topic in JOINT_STATES_TOPICS
-        ]
+        self.joint_state_subscriptions = []
+        for topic in JOINT_STATES_TOPICS:
+            self.joint_state_subscriptions.append(
+                self.create_subscription(
+                    JointState,
+                    topic,
+                    lambda msg, source_topic=topic: self.joint_state_callback(msg, source_topic),
+                    10,
+                )
+            )
 
         self.actual_positions = None
+        self.active_joint_topic = None
+        self.first_joint_state_time = None
+        self.preferred_joint_state_seen = False
         self.full_sent = False
         self.start_time_ns = self.get_clock().now().nanoseconds
         self.execution_start_time = None
@@ -91,6 +114,8 @@ class SmartTrajectoryPlayer(Node):
             reader = csv.reader(csvfile)
             header = next(reader)
             is_new_format = len(header) >= 10 and header[1] == "row_type"
+            header_map = {column_name: index for index, column_name in enumerate(header)}
+            has_named_arm_columns = all(joint_name in header_map for joint_name in JOINT_NAMES)
             raw_points = []
             gripper_events = []
             t0 = None
@@ -104,7 +129,10 @@ class SmartTrajectoryPlayer(Node):
                 if is_new_format:
                     row_type = row[1]
                     if row_type == "joint":
-                        positions = [float(j) for j in row[3:10]]
+                        if has_named_arm_columns:
+                            positions = [float(row[header_map[joint_name]]) for joint_name in JOINT_NAMES]
+                        else:
+                            positions = [float(j) for j in row[3:10]]
                         raw_points.append((dt, positions))
                     elif row_type == "gripper":
                         gripper_events.append((dt, row[2].strip().lower()))
@@ -128,14 +156,30 @@ class SmartTrajectoryPlayer(Node):
         half_window = window // 2
 
         smoothed = []
-        for idx, (dt, _) in enumerate(raw_points):
+        for idx, (dt, original_positions) in enumerate(raw_points):
             start = max(0, idx - half_window)
             end = min(len(raw_points), idx + half_window + 1)
             span = raw_points[start:end]
+            curvature = self.local_path_curvature(raw_points, idx)
 
             avg_positions = []
             for joint_idx in range(len(JOINT_NAMES)):
-                avg_positions.append(sum(p[1][joint_idx] for p in span) / len(span))
+                if curvature >= CURVATURE_PRESERVE_THRESHOLD_RAD:
+                    smoothed_position = original_positions[joint_idx]
+                else:
+                    weighted_sum = 0.0
+                    total_weight = 0.0
+                    for span_idx, (_, span_positions) in enumerate(span):
+                        source_idx = start + span_idx
+                        distance_from_center = abs(source_idx - idx)
+                        weight = float(half_window + 1 - distance_from_center)
+                        weighted_sum += span_positions[joint_idx] * weight
+                        total_weight += weight
+                    smoothed_position = weighted_sum / total_weight
+
+                lower_bound = original_positions[joint_idx] - MAX_SMOOTHING_DEVIATION_RAD
+                upper_bound = original_positions[joint_idx] + MAX_SMOOTHING_DEVIATION_RAD
+                avg_positions.append(min(max(smoothed_position, lower_bound), upper_bound))
             smoothed.append((dt, avg_positions))
 
         filtered = [smoothed[0]]
@@ -150,11 +194,37 @@ class SmartTrajectoryPlayer(Node):
 
         return filtered
 
-    def joint_state_callback(self, msg):
+    def local_path_curvature(self, points, idx):
+        if idx <= 0 or idx >= len(points) - 1:
+            return 0.0
+
+        previous_positions = points[idx - 1][1]
+        current_positions = points[idx][1]
+        next_positions = points[idx + 1][1]
+
+        return max(
+            abs(next_position - 2.0 * current_position + previous_position)
+            for previous_position, current_position, next_position in zip(
+                previous_positions, current_positions, next_positions
+            )
+        )
+
+    def joint_state_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
         missing = [j for j in JOINT_NAMES if j not in joint_map]
         if missing:
-            self.get_logger().warn(f"Missing joints in joint state sample: {missing}")
+            return
+        if self.first_joint_state_time is None:
+            self.first_joint_state_time = time.monotonic()
+        if source_topic == PREFERRED_JOINT_STATE_TOPIC:
+            self.preferred_joint_state_seen = True
+        if self.active_joint_topic is None:
+            self.active_joint_topic = source_topic
+            self.get_logger().info(f"Using joint states from {source_topic}")
+        elif TOPIC_PRIORITY[source_topic] < TOPIC_PRIORITY[self.active_joint_topic]:
+            self.active_joint_topic = source_topic
+            self.get_logger().info(f"Switching joint state source to preferred topic {source_topic}")
+        elif source_topic != self.active_joint_topic:
             return
         self.actual_positions = [joint_map[j] for j in JOINT_NAMES]
 
@@ -166,12 +236,26 @@ class SmartTrajectoryPlayer(Node):
         if self.actual_positions is None:
             if elapsed > WAIT_FOR_STATE_TIMEOUT_SEC:
                 self.get_logger().error(
-                    "Timeout: Never received a complete joint state sample. Expected one of: " + ", ".join(JOINT_STATES_TOPICS)
+                    "Timeout: Never received a complete joint state sample. Expected one of: "
+                    + ", ".join(JOINT_STATES_TOPICS)
                 )
                 self.request_stop()
             else:
                 self.get_logger().info("Waiting for current joint state on: " + ", ".join(JOINT_STATES_TOPICS))
             return
+
+        if (
+            self.active_joint_topic != PREFERRED_JOINT_STATE_TOPIC
+            and not self.preferred_joint_state_seen
+            and self.first_joint_state_time is not None
+        ):
+            fallback_elapsed = time.monotonic() - self.first_joint_state_time
+            if fallback_elapsed < PREFERRED_TOPIC_GRACE_SEC:
+                self.get_logger().info(
+                    f"Waiting briefly for preferred joint states on {PREFERRED_JOINT_STATE_TOPIC} "
+                    f"before starting from fallback topic {self.active_joint_topic}"
+                )
+                return
 
         ready_publishers = [pub for pub in self.trajectory_publishers if pub.get_subscription_count() > 0]
         if not ready_publishers:
@@ -191,15 +275,19 @@ class SmartTrajectoryPlayer(Node):
         self.execution_start_time = time.monotonic()
         self.full_sent = True
         self.timer.cancel()
-        self.playback_thread = threading.Thread(target=self.run_segmented_playback, args=(ready_publishers,), daemon=True)
+        self.playback_thread = threading.Thread(
+            target=self.run_segmented_playback,
+            args=(ready_publishers,),
+            daemon=True,
+        )
         self.playback_thread.start()
 
     def build_execution_trajectory(self):
         timeline = self.build_playback_timeline()
         timed_points = []
-        for segment in timeline['segments']:
-            if segment['type'] == 'trajectory':
-                timed_points.extend(segment['absolute_points'])
+        for segment in timeline["segments"]:
+            if segment["type"] == "trajectory":
+                timed_points.extend(segment["absolute_points"])
 
         traj = JointTrajectory()
         traj.joint_names = JOINT_NAMES
@@ -221,7 +309,11 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
-        return traj, timeline['blend_time'], previous_time
+        if traj.points:
+            # The joint trajectory controller expects the final waypoint to end at rest.
+            traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
+
+        return traj, timeline["blend_time"], previous_time
 
     def build_playback_timeline(self):
         start_error = self.max_joint_error(self.actual_positions, self.start_position)
@@ -229,13 +321,15 @@ class SmartTrajectoryPlayer(Node):
         current_time = 0.0
         blend_points = []
 
-        if start_error > TOLERANCE:
+        if start_error > START_BLEND_EPSILON_RAD:
             blend_steps = max(MIN_BLEND_STEPS, int(blend_time / MIN_POINT_DT))
             blend_step_dt = max(MIN_POINT_DT, blend_time / blend_steps)
             for step_idx in range(1, blend_steps + 1):
                 alpha = step_idx / blend_steps
+                # Smoothstep gives a zero-velocity start/end to reduce startup twitch.
+                eased_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
                 positions = [
-                    current + alpha * (target - current)
+                    current + eased_alpha * (target - current)
                     for current, target in zip(self.actual_positions, self.start_position)
                 ]
                 current_time += blend_step_dt
@@ -246,12 +340,14 @@ class SmartTrajectoryPlayer(Node):
             )
         else:
             self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
+            current_time = INITIAL_SETTLE_SEC
+            blend_points.append((current_time, list(self.start_position)))
 
         event_entries = [
-            {'type': 'gripper', 'time': event_time, 'event_name': event_name}
+            {"type": "gripper", "time": event_time, "event_name": event_name}
             for event_time, event_name in self.gripper_events
         ]
-        event_entries.sort(key=lambda item: item['time'])
+        event_entries.sort(key=lambda item: item["time"])
 
         segments = []
         previous_recorded_dt = None
@@ -259,14 +355,14 @@ class SmartTrajectoryPlayer(Node):
         current_segment_points = list(blend_points)
 
         for dt, positions in self.recorded_points:
-            while event_index < len(event_entries) and dt >= event_entries[event_index]['time']:
+            while event_index < len(event_entries) and dt >= event_entries[event_index]["time"]:
                 if current_segment_points:
                     segment_start = current_segment_points[0][0]
                     segments.append({
-                        'type': 'trajectory',
-                        'absolute_points': current_segment_points,
-                        'timed_points': [(t - segment_start, p) for t, p in current_segment_points],
-                        'duration': current_segment_points[-1][0] - segment_start,
+                        "type": "trajectory",
+                        "absolute_points": current_segment_points,
+                        "timed_points": [(t - segment_start, p) for t, p in current_segment_points],
+                        "duration": current_segment_points[-1][0] - segment_start,
                     })
                     current_segment_points = []
                 segments.append(event_entries[event_index])
@@ -283,10 +379,10 @@ class SmartTrajectoryPlayer(Node):
         if current_segment_points:
             segment_start = current_segment_points[0][0]
             segments.append({
-                'type': 'trajectory',
-                'absolute_points': current_segment_points,
-                'timed_points': [(t - segment_start, p) for t, p in current_segment_points],
-                'duration': current_segment_points[-1][0] - segment_start,
+                "type": "trajectory",
+                "absolute_points": current_segment_points,
+                "timed_points": [(t - segment_start, p) for t, p in current_segment_points],
+                "duration": current_segment_points[-1][0] - segment_start,
             })
 
         while event_index < len(event_entries):
@@ -294,9 +390,9 @@ class SmartTrajectoryPlayer(Node):
             event_index += 1
 
         return {
-            'blend_time': blend_time,
-            'segments': segments,
-            'total_duration': current_time,
+            "blend_time": blend_time,
+            "segments": segments,
+            "total_duration": current_time,
         }
 
     def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
@@ -309,6 +405,7 @@ class SmartTrajectoryPlayer(Node):
 
         previous_time = 0.0
         previous_positions = start_positions
+
         for point_time, positions in timed_points:
             point = JointTrajectoryPoint()
             point.positions = positions
@@ -323,6 +420,10 @@ class SmartTrajectoryPlayer(Node):
             previous_time = point_time
             previous_positions = positions
 
+        if traj.points:
+            # Ensure the controller sees a zero terminal velocity at the end of each segment.
+            traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
+
         for publisher in ready_publishers:
             publisher.publish(traj)
         return timed_points[-1][0]
@@ -333,35 +434,41 @@ class SmartTrajectoryPlayer(Node):
             current_positions = self.actual_positions[:]
             total_runtime = 0.0
 
-            for entry in timeline['segments']:
+            for entry in timeline["segments"]:
                 if self.stop_requested:
                     return
 
-                if entry['type'] == 'trajectory':
-                    duration = self.publish_trajectory_segment(ready_publishers, entry['timed_points'], current_positions)
+                if entry["type"] == "trajectory":
+                    duration = self.publish_trajectory_segment(
+                        ready_publishers,
+                        entry["timed_points"],
+                        current_positions,
+                    )
                     if duration > 0.0:
                         self.get_logger().info(
                             f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
                         )
                         time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
                         total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
-                        current_positions = entry['timed_points'][-1][1]
-                elif entry['type'] == 'gripper':
+                        current_positions = entry["timed_points"][-1][1]
+                elif entry["type"] == "gripper":
                     self.get_logger().info(
                         f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
                     )
-                    self.execute_timed_gripper_event(entry['event_name'])
+                    self.execute_timed_gripper_event(entry["event_name"])
                     time.sleep(GRIPPER_EVENT_SETTLE_SEC)
                     total_runtime += GRIPPER_EVENT_SETTLE_SEC
 
-            self.get_logger().info(f"Segmented playback finished in {total_runtime:.2f} s; shutting down trajectory player")
+            self.get_logger().info(
+                f"Segmented playback finished in {total_runtime:.2f} s; shutting down trajectory player"
+            )
             self.request_stop()
         except RuntimeError as exc:
             self.get_logger().error(str(exc))
             self.request_stop()
 
     def execute_timed_gripper_event(self, event_name):
-        is_open = event_name == 'open'
+        is_open = event_name == "open"
         action_candidates = GRIPPER_MOVE_ACTION_CANDIDATES if is_open else GRIPPER_GRASP_ACTION_CANDIDATES
         action_cls = Move if is_open else Grasp
         with self.gripper_action_lock:
@@ -369,7 +476,6 @@ class SmartTrajectoryPlayer(Node):
 
     def request_stop(self):
         self.stop_requested = True
-
 
     def execute_gripper_event(self, action_cls, action_candidates, event_name):
         node = rclpy.create_node(f"playback_gripper_client_{event_name}_{int(time.time() * 1000)}")
@@ -410,10 +516,12 @@ class SmartTrajectoryPlayer(Node):
             result_future = goal_handle.get_result_async()
             self.spin_until_future_complete(executor, result_future)
             result = result_future.result()
-            status = getattr(result, 'status', 'unknown')
-            self.get_logger().info(
-                f"Recorded gripper event '{event_name}' finished with status {status}"
-            )
+            status = getattr(result, "status", "unknown")
+            if status != 4:
+                raise RuntimeError(
+                    f"Recorded gripper event '{event_name}' failed via {action_name} with status {status}"
+                )
+            self.get_logger().info(f"Recorded gripper event '{event_name}' finished with status {status}")
         finally:
             if client is not None:
                 client.destroy()
@@ -432,17 +540,20 @@ class SmartTrajectoryPlayer(Node):
             time.sleep(0.1)
         return None, None
 
-    def spin_until_future_complete(self, executor, future, timeout_sec: float = 0.1):
+    def spin_until_future_complete(self, executor, future, timeout_sec=0.1):
         while rclpy.ok() and not future.done():
             executor.spin_once(timeout_sec=timeout_sec)
 
     def compute_blend_time(self, max_error):
-        if max_error <= TOLERANCE:
+        if max_error <= START_BLEND_EPSILON_RAD:
             return 0.0
-        return min(
-            MAX_BLEND_TIME_SEC,
-            max(MIN_BLEND_TIME_SEC, max_error / BLEND_SPEED_RAD_PER_SEC),
-        )
+        base_time = max(MIN_BLEND_TIME_SEC, max_error / BLEND_SPEED_RAD_PER_SEC)
+        if max_error <= FAR_START_ERROR_RAD:
+            return min(MAX_BLEND_TIME_SEC, base_time)
+
+        far_error = max_error - FAR_START_ERROR_RAD
+        slowdown_scale = 1.0 + FAR_START_SLOWDOWN_GAIN * (far_error / FAR_START_ERROR_RAD) ** 2
+        return min(MAX_BLEND_TIME_SEC, base_time * slowdown_scale)
 
     def max_joint_error(self, current_positions, target_positions):
         return max(abs(a - b) for a, b in zip(current_positions, target_positions))
@@ -461,6 +572,8 @@ def main(args=None):
         while rclpy.ok() and not node.stop_requested:
             executor.spin_once(timeout_sec=0.1)
         print("Executed")
+    except ExternalShutdownException:
+        pass
     except KeyboardInterrupt:
         pass
     finally:

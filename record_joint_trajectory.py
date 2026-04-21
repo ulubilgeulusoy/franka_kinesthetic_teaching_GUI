@@ -1,50 +1,149 @@
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import JointState
 import csv
 import sys
 from datetime import datetime
 
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+ARM_JOINT_NAMES = [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+]
+JOINT_STATE_TOPICS = [
+    "/NS_1/franka/joint_states",
+    "/NS_1/joint_states",
+    "/joint_states",
+]
+TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATE_TOPICS)}
+PREFERRED_JOINT_STATE_TOPIC = "/NS_1/franka/joint_states"
+TOPIC_SELECTION_TIMEOUT_SEC = 5.0
+DEFAULT_START_POSE = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307, 0.0]
+DEFAULT_POSE_TOLERANCE_RAD = 0.02
+
+
 class JointRecorder(Node):
     def __init__(self):
-        super().__init__('joint_recorder')
-        # Subscribe to the correct joint_states topic with namespace
-        self.subscription = self.create_subscription(
-            JointState,
-            '/NS_1/joint_states',
-            self.listener_callback,
-            10)
+        super().__init__("joint_recorder")
+        self.joint_state_subscriptions = []
+        for topic in JOINT_STATE_TOPICS:
+            self.joint_state_subscriptions.append(
+                self.create_subscription(
+                    JointState,
+                    topic,
+                    lambda msg, source_topic=topic: self.listener_callback(msg, source_topic),
+                    10,
+                )
+            )
         self.joint_data = []
-        self.start_time = self.get_clock().now().nanoseconds
+        self.start_time = None
+        self.active_joint_topic = None
+        self.pending_samples = {topic: [] for topic in JOINT_STATE_TOPICS}
+        self.selection_started_ns = self.get_clock().now().nanoseconds
+        self.selection_timer = self.create_timer(0.1, self._attempt_topic_selection)
 
-    def listener_callback(self, msg):
+    def is_default_start_pose(self, positions):
+        return all(
+            abs(position - default_position) <= DEFAULT_POSE_TOLERANCE_RAD
+            for position, default_position in zip(positions, DEFAULT_START_POSE)
+        )
+
+    def topic_has_usable_samples(self, topic):
+        samples = self.pending_samples.get(topic, [])
+        if not samples:
+            return False
+        if topic == PREFERRED_JOINT_STATE_TOPIC:
+            return True
+        return any(not self.is_default_start_pose(positions) for _, positions in samples)
+
+    def _attempt_topic_selection(self):
+        if self.active_joint_topic is not None:
+            return
+
+        if self.topic_has_usable_samples(PREFERRED_JOINT_STATE_TOPIC):
+            self._activate_joint_topic(PREFERRED_JOINT_STATE_TOPIC)
+            return
+
+        elapsed_sec = (self.get_clock().now().nanoseconds - self.selection_started_ns) / 1e9
+        if elapsed_sec < TOPIC_SELECTION_TIMEOUT_SEC or not any(self.pending_samples.values()):
+            return
+
+        available_topics = [topic for topic in JOINT_STATE_TOPICS if self.topic_has_usable_samples(topic)]
+        if not available_topics:
+            return
+        best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
+        self._activate_joint_topic(best_topic)
+
+    def _activate_joint_topic(self, source_topic):
+        if self.active_joint_topic is not None:
+            return
+        buffered_samples = self.pending_samples.get(source_topic, [])
+        if not buffered_samples:
+            return
+        self.active_joint_topic = source_topic
+        self.start_time = buffered_samples[0][0]
+        self.get_logger().info(f"Recording joint states from {source_topic}")
+        self.selection_timer.cancel()
+        for sample_time_ns, ordered_positions in buffered_samples:
+            timestamp = sample_time_ns - self.start_time
+            self.joint_data.append([timestamp] + ordered_positions)
+        self.pending_samples = {topic: [] for topic in JOINT_STATE_TOPICS}
+
+    def listener_callback(self, msg, source_topic):
+        joint_map = dict(zip(msg.name, msg.position))
+        missing = [joint_name for joint_name in ARM_JOINT_NAMES if joint_name not in joint_map]
+        if missing:
+            return
+
+        ordered_positions = [joint_map[joint_name] for joint_name in ARM_JOINT_NAMES]
+        if self.active_joint_topic is None:
+            sample_time_ns = self.get_clock().now().nanoseconds
+            self.pending_samples[source_topic].append((sample_time_ns, ordered_positions))
+            self._attempt_topic_selection()
+            return
+
+        if source_topic != self.active_joint_topic:
+            return
+
         timestamp = self.get_clock().now().nanoseconds - self.start_time
-        self.joint_data.append([timestamp] + list(msg.position))
+        self.joint_data.append([timestamp] + ordered_positions)
 
     def save_to_csv(self, filename):
+        if not self.joint_data and any(self.pending_samples.values()):
+            available_topics = [topic for topic in JOINT_STATE_TOPICS if self.topic_has_usable_samples(topic)]
+            if available_topics:
+                best_topic = min(available_topics, key=lambda topic: TOPIC_PRIORITY[topic])
+                self._activate_joint_topic(best_topic)
         if not self.joint_data:
             self.get_logger().error("No joint data recorded! Not saving CSV.")
             return
-        with open(filename, 'w', newline='') as f:
-            writer = csv.writer(f)
+        with open(filename, "w", newline="") as file_obj:
+            writer = csv.writer(file_obj)
             writer.writerow([
-                'timestamp_ns',
-                'row_type',
-                'event',
-            ] + [f'joint_{i+1}' for i in range(len(self.joint_data[0]) - 1)])
+                "timestamp_ns",
+                "row_type",
+                "event",
+                *ARM_JOINT_NAMES,
+            ])
             for row in self.joint_data:
-                writer.writerow([row[0], 'joint', ''] + row[1:])
-        self.get_logger().info(f'Saved trajectory to {filename}')
+                writer.writerow([row[0], "joint", ""] + row[1:])
+        self.get_logger().info(f"Saved trajectory to {filename}")
+
 
 def build_output_filename():
     if len(sys.argv) >= 2 and sys.argv[1].strip():
         filename = sys.argv[1].strip()
-        if not filename.endswith('.csv'):
-            filename += '.csv'
+        if not filename.endswith(".csv"):
+            filename += ".csv"
         return filename
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f'joint_trajectory_{timestamp}.csv'
+    return f"joint_trajectory_{timestamp}.csv"
 
 
 def main(args=None):
@@ -55,9 +154,11 @@ def main(args=None):
         rclpy.spin(recorder)
     except KeyboardInterrupt:
         recorder.save_to_csv(build_output_filename())
+    finally:
+        recorder.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
-    recorder.destroy_node()
-    rclpy.shutdown()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
