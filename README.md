@@ -22,7 +22,12 @@ This repo contains one main application: a GUI that manages two workflows:
 - teach a motion by moving the robot by hand while joint states are recorded to CSV
 - replay a recorded trajectory through the FR3 joint trajectory controller
 
-The GUI also provides manual gripper buttons and a dedicated gravity-compensation mode.
+- `Start Gravity Mode` can launch the reduced gravity-compensation mode and lets you move the robot arm freely
+- `Open Gripper` and `Close Gripper` buttons enables you to operate gripper during teaching, gravity mode, or stadalone
+- `Start Teach (Record)` enables you to start teaching, prompt for a CSV filename or don't, start the recorder, when you finish the teaching press the `Stop Teach (Save)` button.
+- `Run Trajectory` enables you to select the recorded trajectory to run it, launches the MoveIt/controller playback stack when you click, then shuts it down again when playback finishes
+
+In practice, this repo is meant to be the operator-facing front end for day-to-day kinesthetic teaching on the FR3.
 
 ## Robot-State / LSL Integration
 
@@ -98,22 +103,29 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 ### Teach mode
 
-- Starts the minimal teach bringup automatically if it is not already running
+- `Start Teach (Record)` is the full recording workflow, not just a gravity-compensation shortcut
+- If the reduced teach stack is not already running, `Start Teach (Record)` launches it first
+- If `Start Gravity Mode` is already active, `Start Teach (Record)` reuses that running stack and starts only the recorder
 - Records joint motion while the arm is moved by hand
 - Publishes `teaching_active = 1` while recording is active and clears it when recording stops
-- Prompts for an optional CSV filename before recording starts
+- `Start Teach (Record)` prompts for an optional CSV filename before recording starts
+- `Start Teach (Record)` starts `record_joint_trajectory.py` and stores the target CSV path
 - Uses a timestamped filename if you leave the prompt blank
-- Records GUI gripper button presses as timestamped `open` and `close` events
-- Merges confirmed gripper events into the CSV in timestamp order when teach mode stops
+- Records `Open Gripper` and `Close Gripper` button presses as timestamped `open` and `close` events
+- `Stop Teach (Save)` merges confirmed gripper events into the CSV in timestamp order when teach mode stops
+- `Stop Teach (Save)` stops the recorder and the teach stack, then resets the GUI back to its idle teach button state
 - Uses the already-running gripper action server from the teach/gravity stack
 - Avoids a separate gripper connection while arm control is active
 
 ### Gravity mode
 
-- Starts the same minimal teach/gravity launch without starting the recorder
+- `Start Gravity Mode` is a separate gravity-compensation workflow, not the same thing as `Start Teach (Record)`
+- `Start Gravity Mode` starts the same reduced ROS stack without prompting for a CSV filename and without starting `record_joint_trajectory.py`
 - Lets you put the arm into gravity compensation independently from recording
 - Exposes the gripper action server from the same bringup stack
-- Does not assert `teaching_active` by itself; gravity mode is kept distinct from actual teach / recording
+- `Start Gravity Mode` changes to `Stop Gravity Mode` while the stack is active
+- `Start Gravity Mode` and `Stop Gravity Mode` do not assert `teaching_active` by themselves; gravity mode is kept distinct from actual teach / recording
+- `Stop Gravity Mode` shuts down the gravity stack and resets the button without saving a recording unless you separately started `Start Teach (Record)`
 
 ### GUI gripper buttons
 
@@ -125,10 +137,10 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 ### Run mode
 
-- Lets you choose a saved CSV from the GUI
-- Launches the FR3 MoveIt/controller stack
+- `Run Trajectory` lets you choose a saved CSV from the GUI
+- `Run Trajectory` launches the FR3 MoveIt/controller stack
 - Publishes `running_active = 1` while trajectory playback is active and clears it when playback finishes or aborts
-- Waits for a gripper action server before starting playback
+- `Run Trajectory` waits for a gripper action server before starting playback
 - The playback node waits for joint state feedback and a trajectory-controller subscriber before publishing
 - Smooths recorded waypoints during playback
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
@@ -165,6 +177,75 @@ cd ~/franka_kinesthetic_teaching_GUI
 ```
 
 ## Usage
+
+### GUI User Guide
+
+The main window is intentionally simple: two rows of control buttons, a one-line status field, a scrollable runtime log, and an `Open CSV Dir…` shortcut for recorded files.
+
+### Top-row controls
+
+#### `Start Teach (Record)` / `Stop Teach (Save)`
+
+- `Start Teach (Record)` begins the teaching workflow.
+- It first prompts for an optional CSV filename. If you leave it blank, the GUI creates a timestamped filename.
+- If gravity compensation is not already active, the GUI starts the reduced teach stack so the arm can be moved by hand.
+- If gravity compensation is already active, the GUI keeps that stack running and starts only the recorder.
+- The GUI then starts `record_joint_trajectory.py`, sets `teaching_active = 1`, changes the button label to `Stop Teach (Save)`, and waits while you demonstrate the motion by moving the arm.
+- While teaching is active, `Run Trajectory`, `Start Gravity Mode`, and `Open CSV Dir…` are disabled so the recording session is not interrupted.
+- Any `Open Gripper` and `Close Gripper` presses during teaching are timestamped so they can be added to the same recording.
+- When you click `Stop Teach (Save)`, the GUI stops the recorder and teach processes, appends any recorded gripper events to the CSV, clears `teaching_active`, and changes the button back to `Start Teach (Record)`.
+
+#### `Run Trajectory`
+
+- Opens a file picker so you can choose a recorded CSV.
+- Starts the FR3 MoveIt/controller launch used for playback.
+- Waits briefly, then checks that a gripper action server is available before starting `playback_joint_trajectory.py`.
+- Changes its label to `Running…` while playback is in progress.
+- Re-enables the rest of the GUI when playback finishes or aborts.
+
+#### `Kill`
+
+- Immediately sends termination signals to all teach, playback, and temporary gripper processes started by the GUI.
+- Clears GUI mode flags, resets button labels, and sets the status line to `Active processes killed.`.
+- This is the emergency stop/cleanup button for the application layer. It is not a substitute for the robot's physical safety stop.
+
+### Second-row controls
+
+#### `Start Gravity Mode`
+
+- `Start Gravity Mode` enables gravity compensation so the arm can be moved freely by hand without starting a recording.
+- It starts the reduced gravity-compensation ROS launch and changes the button to `Stop Gravity Mode`.
+- It does not prompt for a filename and does not start `record_joint_trajectory.py`.
+- When you click `Stop Gravity Mode`, the GUI shuts that stack down and returns the button to `Start Gravity Mode`.
+
+#### `Open Gripper`
+
+- Sends a Franka `Move` action to open the gripper to the configured open width.
+- If teaching is active, also records an `open` gripper event with a timestamp so it can be merged into the CSV when teaching stops.
+- During teach/gravity mode, uses the gripper action server from the already-running teach stack.
+- Outside teach/gravity mode, temporarily launches a standalone gripper node, sends the command, then shuts that node down.
+
+#### `Close Gripper`
+
+- Sends a Franka `Grasp` action to close the gripper using the configured width, speed, force, and epsilon values.
+- If teaching is active, also records a `close` gripper event for later CSV merge.
+- Uses the same action-server logic as `Open Gripper`: shared server during teach/gravity mode, temporary standalone node otherwise.
+
+### Footer and feedback area
+
+#### Status line
+
+- Shows the current high-level GUI state such as `Idle`, `Gravity compensation active.`, `Recording… Move arm by hand to teach.`, `Running trajectory…`, or the most recent failure message.
+
+#### Runtime log
+
+- Streams launch output, recorder/playback progress, gripper command results, and teach/gravity failure messages into the text log.
+- This is the first place to look if a launch fails, a gripper server is missing, or playback shuts down unexpectedly.
+
+#### `Open CSV Dir…`
+
+- `Open CSV Dir…` opens the GUI's current working directory in the system file browser with `xdg-open`.
+- This is the directory where recordings are saved by default when you do not provide a different filename or path.
 
 ### Record a trajectory
 
