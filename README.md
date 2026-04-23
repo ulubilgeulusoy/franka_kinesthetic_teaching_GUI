@@ -24,6 +24,23 @@ This repo contains one main application: a GUI that manages two workflows:
 
 The GUI also provides manual gripper buttons and a dedicated gravity-compensation mode.
 
+## Robot-State / LSL Integration
+
+This GUI now publishes explicit kinesthetic mode state to the local FR3 robot-state API at `http://127.0.0.1:8765/state` so the FR3 control / LSL tooling can distinguish kinesthetic sub-modes.
+
+Current behavior:
+- `kt_active` is handled by the outer FR3 control launcher when this GUI is started or stopped
+- `teaching_active = 1` while actual teach / recording is active
+- `teaching_active = 0` when teach stops or is cleaned up
+- `running_active = 1` while trajectory playback is active
+- `running_active = 0` when playback finishes, aborts, or is cleaned up
+- gravity-compensation mode by itself does **not** mark `teaching_active` as on
+
+This separation is intentional so downstream LSL consumers can distinguish:
+- kinesthetic GUI open
+- actual teaching / recording
+- trajectory playback
+
 ## Main application
 
 The main application is [`franka_teach_run_gui_v2.py`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach_run_gui_v2.py). It is launched by [`run_gui.sh`](/home/parc/franka_kinesthetic_teaching_GUI/run_gui.sh), which sources ROS and then runs the Tkinter app.
@@ -83,6 +100,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 - Starts the minimal teach bringup automatically if it is not already running
 - Records joint motion while the arm is moved by hand
+- Publishes `teaching_active = 1` while recording is active and clears it when recording stops
 - Prompts for an optional CSV filename before recording starts
 - Uses a timestamped filename if you leave the prompt blank
 - Records GUI gripper button presses as timestamped `open` and `close` events
@@ -95,6 +113,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - Starts the same minimal teach/gravity launch without starting the recorder
 - Lets you put the arm into gravity compensation independently from recording
 - Exposes the gripper action server from the same bringup stack
+- Does not assert `teaching_active` by itself; gravity mode is kept distinct from actual teach / recording
 
 ### GUI gripper buttons
 
@@ -108,6 +127,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 
 - Lets you choose a saved CSV from the GUI
 - Launches the FR3 MoveIt/controller stack
+- Publishes `running_active = 1` while trajectory playback is active and clears it when playback finishes or aborts
 - Waits for a gripper action server before starting playback
 - The playback node waits for joint state feedback and a trajectory-controller subscriber before publishing
 - Smooths recorded waypoints during playback
