@@ -338,7 +338,6 @@ class FR3TeachRunGUI(tk.Tk):
             f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)}"
         ))
         self.gravity_mode = True
-        self._post_state_update({"teaching_active": 1})
         self.btn_gravity.configure(text="Stop Gravity Mode")
         self._refresh_controls()
 
