@@ -6,6 +6,12 @@ import signal
 import subprocess
 import threading
 import time
+import json
+from urllib.request import Request, urlopen
+
+STATE_API_URL = "http://127.0.0.1:8765/state"
+API_TIMEOUT_SEC = 0.2
+
 import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -139,6 +145,21 @@ class FR3TeachRunGUI(tk.Tk):
         self._build_ui()
         self._refresh_controls()
         self.after(50, self._poll_queue)
+        self._post_state_update({"teaching_active": 0, "running_active": 0})
+
+    def _post_state_update(self, payload):
+        try:
+            body = json.dumps(payload).encode("utf-8")
+            request = Request(
+                STATE_API_URL,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=API_TIMEOUT_SEC):
+                pass
+        except Exception:
+            pass
 
     def ensure_ros_client_ready(self):
         with self.ros_init_lock:
@@ -243,6 +264,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.last_teach_failure_time = time.time()
         self.teaching = False
         self.gravity_mode = False
+        self._post_state_update({"teaching_active": 0, "running_active": 0})
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.status_var.set(f"Teach/gravity crashed: {reason}")
@@ -316,6 +338,7 @@ class FR3TeachRunGUI(tk.Tk):
             f"robot_config_file:={shlex.quote(TEACH_ROBOT_CONFIG)}"
         ))
         self.gravity_mode = True
+        self._post_state_update({"teaching_active": 1})
         self.btn_gravity.configure(text="Stop Gravity Mode")
         self._refresh_controls()
 
@@ -339,6 +362,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.teach_pg.clear_finished()
         self.gravity_mode = False
         self.teaching = False
+        self._post_state_update({"teaching_active": 0})
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
         if self.last_teach_failure and time.time() - self.last_teach_failure_time < 2.0:
@@ -382,6 +406,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.teach_pg.start(bash_cmd(recorder_cmd))
 
         self.teaching = True
+        self._post_state_update({"teaching_active": 1})
         self.btn_teach.configure(text="Stop Teach (Save)")
         self.status_var.set("Recording… Move arm by hand to teach.")
         self._refresh_controls()
@@ -405,9 +430,11 @@ class FR3TeachRunGUI(tk.Tk):
         self.append_gripper_events_to_csv()
         self.teaching = False
         self.gravity_mode = False
+        self._post_state_update({"teaching_active": 0, "running_active": 0})
         self.teach_start_time_ns = None
         self.current_recording_filename = None
         self.current_playback_proc = None
+        self._post_state_update({"running_active": 0})
         self.recorded_gripper_events = []
         self.btn_teach.configure(text="Start Teach (Record)")
         self.btn_gravity.configure(text="Start Gravity Mode")
@@ -723,6 +750,7 @@ class FR3TeachRunGUI(tk.Tk):
             if action_name is None:
                 self.line_queue.put("Playback aborted because no gripper action server became available.")
                 self.status_var.set("Gripper action server not available.")
+                self._post_state_update({"running_active": 0})
                 self.running = False
                 self.btn_run.configure(text="Run Trajectory")
                 self._refresh_controls()
@@ -733,6 +761,7 @@ class FR3TeachRunGUI(tk.Tk):
                 f"python3 playback_joint_trajectory.py '{csv_path}'"
             ))
             self.current_playback_proc = playback_proc
+            self._post_state_update({"running_active": 1})
             threading.Thread(target=self._watch_playback_process, args=(playback_proc,), daemon=True).start()
         threading.Thread(target=delayed_start, daemon=True).start()
 
@@ -754,6 +783,7 @@ class FR3TeachRunGUI(tk.Tk):
         while self.run_pg.is_alive():
             time.sleep(0.5)
         self.current_playback_proc = None
+        self._post_state_update({"running_active": 0})
         self.running = False
         # UI updates must be done in main thread; schedule via after
         self.after(0, lambda: self.btn_run.configure(text="Run Trajectory"))
@@ -778,10 +808,13 @@ class FR3TeachRunGUI(tk.Tk):
         self.teaching = False
         self.gravity_mode = False
         self.current_playback_proc = None
+        self._post_state_update({"teaching_active": 0, "running_active": 0})
+        self._post_state_update({"running_active": 0})
         self.running = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
         self.current_playback_proc = None
+        self._post_state_update({"running_active": 0})
         self.recorded_gripper_events = []
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
