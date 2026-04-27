@@ -141,6 +141,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.recorded_gripper_events = []
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
+        self.last_reflex_stop_reason = None
+        self.last_reflex_stop_time = 0.0
 
         self._build_ui()
         self._refresh_controls()
@@ -259,18 +261,65 @@ class FR3TeachRunGUI(tk.Tk):
             return line.strip()
         return None
 
+    def _extract_reflex_stop_reason(self, line: str):
+        lowered = line.lower()
+        if "move command aborted: motion aborted by reflex!" not in lowered:
+            return None
+        if "joint_velocity_violation" in lowered:
+            return "joint_velocity_violation"
+        if "joint_position_limits_violation" in lowered:
+            return "joint_position_limits_violation"
+        if "cartesian_velocity_violation" in lowered:
+            return "cartesian_velocity_violation"
+        if "cartesian_position_limits_violation" in lowered:
+            return "cartesian_position_limits_violation"
+        return "motion_reflex_abort"
+
+    def _clear_process_group_state(self, process_group: ProcessGroup):
+        with process_group._lock:
+            process_group.procs = [p for p in process_group.procs if p.poll() is None]
+            if not process_group.procs:
+                process_group.procs = []
+
+    def _cleanup_after_teach_stop(self):
+        self._clear_process_group_state(self.teach_pg)
+        self.shutdown_gripper_node()
+        self.append_gripper_events_to_csv()
+        self.teaching = False
+        self.gravity_mode = False
+        self.teach_start_time_ns = None
+        self.current_recording_filename = None
+        self.current_playback_proc = None
+        self.recorded_gripper_events = []
+        self.btn_teach.configure(text="Start Teach (Record)")
+        self.btn_gravity.configure(text="Start Gravity Mode")
+        self._post_state_update({"teaching_active": 0, "running_active": 0})
+
+    def _handle_reflex_stop(self, reason: str, line: str):
+        self.last_reflex_stop_reason = reason
+        self.last_reflex_stop_time = time.time()
+        self.last_teach_failure = line.strip()
+        self.last_teach_failure_time = self.last_reflex_stop_time
+        self._cleanup_after_teach_stop()
+        self.status_var.set(
+            "Motion stopped by Franka safety reflex "
+            f"({reason}). Restart gravity or teach mode to continue."
+        )
+        self._refresh_controls()
+
     def _mark_teach_failure(self, reason: str):
         self.last_teach_failure = reason
         self.last_teach_failure_time = time.time()
-        self.teaching = False
-        self.gravity_mode = False
-        self._post_state_update({"teaching_active": 0, "running_active": 0})
-        self.btn_teach.configure(text="Start Teach (Record)")
-        self.btn_gravity.configure(text="Start Gravity Mode")
+        self._cleanup_after_teach_stop()
         self.status_var.set(f"Teach/gravity crashed: {reason}")
         self._refresh_controls()
 
     def _handle_runtime_log_line(self, line: str):
+        reflex_reason = self._extract_reflex_stop_reason(line)
+        if reflex_reason is not None:
+            if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
+                self._handle_reflex_stop(reflex_reason, line)
+            return
         reason = self._extract_teach_failure_reason(line)
         if reason is None:
             return
@@ -343,6 +392,7 @@ class FR3TeachRunGUI(tk.Tk):
 
     def start_gravity_mode(self):
         self.last_teach_failure = None
+        self.last_reflex_stop_reason = None
         if self.teach_pg.is_alive():
             messagebox.showwarning(
                 "Teach processes running",
@@ -364,7 +414,12 @@ class FR3TeachRunGUI(tk.Tk):
         self._post_state_update({"teaching_active": 0})
         self.btn_gravity.configure(text="Start Gravity Mode")
         self.btn_teach.configure(text="Start Teach (Record)")
-        if self.last_teach_failure and time.time() - self.last_teach_failure_time < 2.0:
+        if self.last_reflex_stop_reason and time.time() - self.last_reflex_stop_time < 2.0:
+            self.status_var.set(
+                "Motion stopped by Franka safety reflex "
+                f"({self.last_reflex_stop_reason}). Restart gravity or teach mode to continue."
+            )
+        elif self.last_teach_failure and time.time() - self.last_teach_failure_time < 2.0:
             self.status_var.set(f"Teach/gravity crashed: {self.last_teach_failure}")
         else:
             self.status_var.set("Gravity compensation stopped.")
@@ -372,6 +427,7 @@ class FR3TeachRunGUI(tk.Tk):
 
     def start_teach(self):
         self.last_teach_failure = None
+        self.last_reflex_stop_reason = None
         custom_name = simpledialog.askstring(
             "Recording File Name",
             "Optional: enter a CSV filename for this recording. Leave blank to use the default timestamped name.",
@@ -424,20 +480,14 @@ class FR3TeachRunGUI(tk.Tk):
             time.sleep(0.5)
 
         crashed_reason = self.last_teach_failure
-        self.teach_pg.clear_finished()
-        self.shutdown_gripper_node()
-        self.append_gripper_events_to_csv()
-        self.teaching = False
-        self.gravity_mode = False
-        self._post_state_update({"teaching_active": 0, "running_active": 0})
-        self.teach_start_time_ns = None
-        self.current_recording_filename = None
-        self.current_playback_proc = None
-        self._post_state_update({"running_active": 0})
-        self.recorded_gripper_events = []
-        self.btn_teach.configure(text="Start Teach (Record)")
-        self.btn_gravity.configure(text="Start Gravity Mode")
-        if crashed_reason:
+        reflex_reason = self.last_reflex_stop_reason
+        self._cleanup_after_teach_stop()
+        if reflex_reason:
+            self.status_var.set(
+                "Motion stopped by Franka safety reflex "
+                f"({reflex_reason}). Restart gravity or teach mode to continue."
+            )
+        elif crashed_reason:
             self.status_var.set(f"Teach/gravity crashed: {crashed_reason}")
         else:
             self.status_var.set("Teach stopped. Check CSV in current directory.")
