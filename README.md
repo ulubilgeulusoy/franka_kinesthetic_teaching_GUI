@@ -16,6 +16,18 @@ Important notes:
 - `run_gui.sh` is intended to be the entry point and should source `/opt/ros/humble/setup.bash` and your local Franka workspace.
 - A realtime kernel is still recommended for smoother control behavior, even though the GUI can run without perfect realtime tuning.
 
+### Branch-specific backend
+
+The `Humble_KT_failsafe` branch is wired to the experimental workspace:
+
+- `~/franka_ws_jointfailsafe`
+
+instead of the original backend:
+
+- `~/franka_ws`
+
+This branch is therefore intended for testing the experimental soft-stop kinesthetic backend without modifying the original workspace.
+
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
@@ -80,7 +92,7 @@ It brings up:
 - `controller_manager` / `ros2_control_node`
 - `joint_state_publisher`
 - `joint_state_broadcaster`
-- `gravity_compensation_example_controller`
+- `soft_stop_gravity_controller` on the `Humble_KT_failsafe` branch
 - the Franka gripper launch, if `load_gripper` is enabled
 
 It does not bring up the full MoveIt playback stack.
@@ -122,6 +134,8 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - `Start Gravity Mode` is a separate gravity-compensation workflow, not the same thing as `Start Teach (Record)`
 - `Start Gravity Mode` starts the same reduced ROS stack without prompting for a CSV filename and without starting `record_joint_trajectory.py`
 - Lets you put the arm into gravity compensation independently from recording
+- On the `Humble_KT_failsafe` branch, gravity mode uses an experimental soft-stop controller from `~/franka_ws_jointfailsafe`
+- In that experimental mode, approaching FR3 joint limits should feel like a soft physical boundary rather than pure zero-torque gravity compensation
 - Exposes the gripper action server from the same bringup stack
 - `Start Gravity Mode` changes to `Stop Gravity Mode` while the stack is active
 - `Start Gravity Mode` and `Stop Gravity Mode` do not assert `teaching_active` by themselves; gravity mode is kept distinct from actual teach / recording
@@ -163,6 +177,10 @@ Main user-editable settings live in [`franka_teach_run_gui_v2.py`](/home/parc/fr
 - `ROS_SETUP`
 - `ROBOT_IP`
 - `TEACH_NAMESPACE`
+
+On the `Humble_KT_failsafe` branch, `ROS_SETUP` is intentionally pointed at:
+
+- `~/franka_ws_jointfailsafe/install/setup.bash`
 
 Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml).
 
