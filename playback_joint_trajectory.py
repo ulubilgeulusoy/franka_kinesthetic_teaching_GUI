@@ -40,6 +40,7 @@ GRIPPER_SPEED = 0.1
 GRIPPER_GRASP_FORCE = 40.0
 GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
+REPLAY_LIMIT_MARGIN_RAD = 0.22
 ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
 ROBOT_IP = "172.16.0.2"
 TEACH_NAMESPACE = "NS_1"
@@ -69,6 +70,8 @@ GRIPPER_GRASP_ACTION_CANDIDATES = [
     f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
 ]
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
+LOWER_JOINT_LIMITS = [-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159]
+UPPER_JOINT_LIMITS = [2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159]
 
 
 class SmartTrajectoryPlayer(Node):
@@ -101,6 +104,7 @@ class SmartTrajectoryPlayer(Node):
         self.stop_requested = False
         self.gripper_action_lock = threading.Lock()
         self.playback_thread = None
+        self.limit_adjustment_counts = [0] * len(JOINT_NAMES)
 
         self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
@@ -141,11 +145,13 @@ class SmartTrajectoryPlayer(Node):
                     raw_points.append((dt, positions))
 
         filtered_points = self.smooth_and_downsample_points(raw_points)
+        filtered_points = self.apply_replay_limit_margin(filtered_points)
         self.get_logger().info(
             f"Loaded {len(raw_points)} joint points, publishing {len(filtered_points)} smoothed points"
         )
         if gripper_events:
             self.get_logger().info(f"Loaded {len(gripper_events)} gripper event(s)")
+        self.log_limit_adjustments()
         return filtered_points, gripper_events
 
     def smooth_and_downsample_points(self, raw_points):
@@ -193,6 +199,33 @@ class SmartTrajectoryPlayer(Node):
             filtered.append(smoothed[-1])
 
         return filtered
+
+    def apply_replay_limit_margin(self, points):
+        adjusted_points = []
+        for dt, positions in points:
+            adjusted_positions = []
+            for joint_idx, position in enumerate(positions):
+                lower_bound = LOWER_JOINT_LIMITS[joint_idx] + REPLAY_LIMIT_MARGIN_RAD
+                upper_bound = UPPER_JOINT_LIMITS[joint_idx] - REPLAY_LIMIT_MARGIN_RAD
+                adjusted_position = min(max(position, lower_bound), upper_bound)
+                if adjusted_position != position:
+                    self.limit_adjustment_counts[joint_idx] += 1
+                adjusted_positions.append(adjusted_position)
+            adjusted_points.append((dt, adjusted_positions))
+        return adjusted_points
+
+    def log_limit_adjustments(self):
+        adjustment_messages = []
+        for joint_idx, adjustment_count in enumerate(self.limit_adjustment_counts):
+            if adjustment_count > 0:
+                adjustment_messages.append(
+                    f"{JOINT_NAMES[joint_idx]}: {adjustment_count} point(s)"
+                )
+        if adjustment_messages:
+            self.get_logger().warn(
+                "Replay limit margin adjusted trajectory points inward for safety: "
+                + ", ".join(adjustment_messages)
+            )
 
     def local_path_curvature(self, points, idx):
         if idx <= 0 or idx >= len(points) - 1:

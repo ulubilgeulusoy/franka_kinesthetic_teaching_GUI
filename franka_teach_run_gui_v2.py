@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import json
+import traceback
 from urllib.request import Request, urlopen
 
 STATE_API_URL = "http://127.0.0.1:8765/state"
@@ -59,6 +60,7 @@ GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
 TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
+LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 # -------------------------------------------
 
 def bash_cmd(cmd: str):
@@ -143,11 +145,19 @@ class FR3TeachRunGUI(tk.Tk):
         self.last_teach_failure_time = 0.0
         self.last_reflex_stop_reason = None
         self.last_reflex_stop_time = 0.0
+        self.log_file_handle = None
+        self.session_log_path = None
+
+        self._setup_session_logging()
+        self.report_callback_exception = self._handle_tk_exception
+        threading.excepthook = self._handle_thread_exception
 
         self._build_ui()
         self._refresh_controls()
         self.after(50, self._poll_queue)
         self._post_state_update({"teaching_active": 0, "running_active": 0})
+        self.protocol("WM_DELETE_WINDOW", self.on_window_close)
+        self._append_log(f"Session log: {self.session_log_path}")
 
     def _post_state_update(self, payload):
         try:
@@ -181,6 +191,53 @@ class FR3TeachRunGUI(tk.Tk):
                 executor.spin_once(timeout_sec=timeout_sec)
         finally:
             executor.remove_node(node)
+
+    def _setup_session_logging(self):
+        os.makedirs(LOG_DIR, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        self.session_log_path = os.path.join(LOG_DIR, f"teach_run_gui_{timestamp}.log")
+        self.log_file_handle = open(self.session_log_path, "a", encoding="utf-8")
+        self._write_log_line("=== FR3 Teach & Run session started ===")
+        self._write_log_line(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self._write_log_line(f"Script dir: {SCRIPT_DIR}")
+        self._write_log_line(f"ROS_SETUP: {ROS_SETUP}")
+        self._write_log_line(f"ROBOT_IP: {ROBOT_IP}")
+        self._write_log_line(f"TEACH_NAMESPACE: {TEACH_NAMESPACE}")
+
+    def _write_log_line(self, line: str):
+        if self.log_file_handle is None:
+            return
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.log_file_handle.write(f"[{timestamp}] {line}\n")
+        self.log_file_handle.flush()
+
+    def _log_exception(self, context: str, exc_info):
+        formatted = "".join(traceback.format_exception(*exc_info)).rstrip()
+        self._write_log_line(f"[EXCEPTION] {context}")
+        for line in formatted.splitlines():
+            self._write_log_line(line)
+
+    def _handle_tk_exception(self, exc_type, exc_value, exc_traceback):
+        self._log_exception("Tkinter callback exception", (exc_type, exc_value, exc_traceback))
+        self._append_log(f"[EXCEPTION] {exc_value}")
+
+    def _handle_thread_exception(self, args):
+        self._log_exception(
+            f"Thread exception in {args.thread.name}",
+            (args.exc_type, args.exc_value, args.exc_traceback),
+        )
+        self.line_queue.put(f"[EXCEPTION] Thread {args.thread.name}: {args.exc_value}")
+
+    def on_window_close(self):
+        self._write_log_line("Window close requested.")
+        try:
+            self.kill_all()
+        finally:
+            self._write_log_line("=== FR3 Teach & Run session ended ===")
+            if self.log_file_handle is not None:
+                self.log_file_handle.close()
+                self.log_file_handle = None
+            self.destroy()
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=10)
@@ -246,6 +303,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.btn_open_dir.pack(side="right")
 
     def _append_log(self, line: str):
+        self._write_log_line(line)
         self.log.configure(state="normal")
         self.log.insert("end", line + "\n")
         self.log.see("end")
