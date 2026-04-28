@@ -38,7 +38,7 @@ def load_ros_environment(setup_cmd: str):
 
 # Load the ROS environment into this GUI process so native rclpy clients
 # behave the same whether the app is launched locally or through SSH/X11.
-ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws/install/setup.bash"
+ROS_SETUP = "source /opt/ros/humble/setup.bash; source ~/franka_ws_jointfailsafe/install/setup.bash"
 load_ros_environment(ROS_SETUP)
 
 import rclpy

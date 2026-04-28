@@ -89,7 +89,7 @@ def generate_robot_nodes(context):
                 package='controller_manager',
                 executable='spawner',
                 namespace=namespace,
-                arguments=['gravity_compensation_example_controller', '--controller-manager-timeout', '30'],
+                arguments=['soft_stop_gravity_controller', '--controller-manager-timeout', '30'],
                 parameters=[controllers_yaml],
                 output='screen',
             ),
