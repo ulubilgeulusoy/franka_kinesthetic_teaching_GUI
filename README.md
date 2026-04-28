@@ -135,7 +135,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - `Start Gravity Mode` starts the same reduced ROS stack without prompting for a CSV filename and without starting `record_joint_trajectory.py`
 - Lets you put the arm into gravity compensation independently from recording
 - On the `Humble_KT_failsafe` branch, gravity mode uses an experimental soft-stop controller from `~/franka_ws_jointfailsafe`
-- In that experimental mode, approaching FR3 joint limits should feel like a soft physical boundary rather than pure zero-torque gravity compensation
+- In that experimental mode, free-space motion is intended to stay close to normal gravity compensation, while approaching FR3 joint limits should feel like a soft physical boundary
 - Exposes the gripper action server from the same bringup stack
 - `Start Gravity Mode` changes to `Stop Gravity Mode` while the stack is active
 - `Start Gravity Mode` and `Stop Gravity Mode` do not assert `teaching_active` by themselves; gravity mode is kept distinct from actual teach / recording
@@ -160,6 +160,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
 - Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
 - Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
+- On `Humble_KT_failsafe`, playback still runs through the normal MoveIt / `fr3_arm_controller` stack even though teach / gravity uses the experimental soft-stop controller
 
 ## Requirements
 
@@ -186,6 +187,10 @@ Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/fra
 
 Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
 Recorder topic-selection safeguards live in [`record_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/record_joint_trajectory.py).
+
+Important branch note:
+- on `Humble_KT_failsafe`, teach / gravity uses the experimental backend in `~/franka_ws_jointfailsafe`
+- trajectory playback also launches from that workspace, but still uses the normal MoveIt / trajectory-controller path rather than the soft-stop gravity controller
 
 ## Running
 
