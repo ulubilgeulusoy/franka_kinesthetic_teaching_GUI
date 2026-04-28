@@ -157,6 +157,7 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 - `Run Trajectory` waits for a gripper action server before starting playback
 - The playback node waits for joint state feedback and a trajectory-controller subscriber before publishing
 - Smooths recorded waypoints during playback
+- Applies a small replay-only inward joint-limit margin before sending points to `fr3_arm_controller`
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
 - Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
 - Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
@@ -187,6 +188,7 @@ Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/fra
 
 Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
 Recorder topic-selection safeguards live in [`record_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/record_joint_trajectory.py).
+GUI session logs are written under [`logs/`](/home/parc/franka_kinesthetic_teaching_GUI/logs:1).
 
 Important branch note:
 - on `Humble_KT_failsafe`, teach / gravity uses the experimental backend in `~/franka_ws_jointfailsafe`
@@ -264,6 +266,8 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 
 - Streams launch output, recorder/playback progress, gripper command results, and teach/gravity failure messages into the text log.
 - This is the first place to look if a launch fails, a gripper server is missing, or playback shuts down unexpectedly.
+- Each GUI launch also writes the same stream to a timestamped session log file under [`logs/`](/home/parc/franka_kinesthetic_teaching_GUI/logs:1).
+- Uncaught GUI callback exceptions and background-thread exceptions are written to that session log as well.
 
 #### `Open CSV Dir…`
 
@@ -345,6 +349,13 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 - `close` events use the Franka gripper `Grasp` action
 - The arm trajectory is intentionally held while each gripper event executes
 - Playback expects an already-running gripper action server, typically from the MoveIt launch started by the GUI
+
+### Replay safety margin
+
+- On playback only, points that get too close to the FR3 joint limits are clamped slightly inward before publishing
+- This inward clamp is controlled by `REPLAY_LIMIT_MARGIN_RAD = 0.06`
+- The original CSV on disk is not modified; the adjustment only affects the in-memory replayed trajectory
+- If any points are adjusted, the playback log reports which joints were affected and how many points were changed
 
 ## Topics used by this repo
 
