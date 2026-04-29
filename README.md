@@ -37,7 +37,7 @@ This repo contains one main application: a GUI that manages two workflows:
 - `Start Gravity Mode` can launch the reduced gravity-compensation mode and lets you move the robot arm freely
 - `Open Gripper` and `Close Gripper` buttons enables you to operate gripper during teaching, gravity mode, or stadalone
 - `Start Teach (Record)` enables you to start teaching, prompt for a CSV filename or don't, start the recorder, when you finish the teaching press the `Stop Teach (Save)` button.
-- `Run Trajectory` enables you to select the recorded trajectory to run it, launches the MoveIt/controller playback stack when you click, then shuts it down again when playback finishes
+- `Run Trajectory` enables you to select the recorded trajectory to run it, but only when the robot is in a clean run-ready state; it launches the MoveIt/controller playback stack, checks readiness, then shuts it down again when playback finishes
 
 In practice, this repo is meant to be the operator-facing front end for day-to-day kinesthetic teaching on the FR3.
 
@@ -109,7 +109,7 @@ The teach config currently used by the GUI is [`franka_teach.config.yaml`](/home
 When you click `Run Trajectory`, the GUI launches:
 - `ros2 launch franka_fr3_moveit_config moveit.launch.py robot_ip:=... namespace:=NS_1 arm_id:=fr3`
 
-After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py) on the selected CSV.
+It then waits for the playback stack to become ready before running [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py) on the selected CSV.
 
 ## Features
 
@@ -152,9 +152,12 @@ After a short delay, it runs [`playback_joint_trajectory.py`](/home/parc/franka_
 ### Run mode
 
 - `Run Trajectory` lets you choose a saved CSV from the GUI
+- `Run Trajectory` is disabled unless the robot is in a clean run-ready state
+- Run readiness requires no active teach mode, no active gravity mode, no teach/gravity shutdown still in progress, no active playback, and no in-flight standalone gripper command
 - `Run Trajectory` launches the FR3 MoveIt/controller stack
 - Publishes `running_active = 1` while trajectory playback is active and clears it when playback finishes or aborts
-- `Run Trajectory` waits for a gripper action server before starting playback
+- `Run Trajectory` first enters a `Preparing…` phase while the MoveIt/controller stack starts
+- `Run Trajectory` waits for a trajectory-controller subscriber and a gripper action server before starting playback
 - The playback node waits for joint state feedback and a trajectory-controller subscriber before publishing
 - Smooths recorded waypoints during playback
 - Applies a small replay-only inward joint-limit margin before sending points to `fr3_arm_controller`
@@ -223,8 +226,12 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 #### `Run Trajectory`
 
 - Opens a file picker so you can choose a recorded CSV.
+- The button is disabled unless the robot is actually ready to run.
+- In practice, teach mode, gravity mode, leftover teach/gravity shutdown, prior playback processes, and temporary standalone gripper activity all block the button.
 - Starts the FR3 MoveIt/controller launch used for playback.
-- Waits briefly, then checks that a gripper action server is available before starting `playback_joint_trajectory.py`.
+- Changes its label to `Preparing…` while the playback stack is being brought up.
+- Waits for a trajectory-controller subscriber and a gripper action server before starting `playback_joint_trajectory.py`.
+- If those readiness checks fail, playback is aborted cleanly and the status line shows the readiness failure instead of attempting a bad run.
 - Changes its label to `Running…` while playback is in progress.
 - Re-enables the rest of the GUI when playback finishes or aborts.
 
@@ -288,11 +295,12 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 
 1. Click `Run Trajectory`.
 2. Choose a previously recorded CSV.
-3. The GUI launches the FR3 MoveIt/controller stack.
-4. The GUI waits for a gripper action server.
-5. The playback node waits for valid joint states and an active trajectory-controller subscriber.
-6. Playback publishes segmented trajectories that blend from the current pose into the recording when needed.
-7. If the CSV contains `gripper` rows, playback pauses between arm segments and executes those recorded `open` and `close` events.
+3. The GUI only allows this if the robot is already in a clean run-ready state.
+4. The GUI launches the FR3 MoveIt/controller stack and enters `Preparing…`.
+5. The GUI waits for a trajectory-controller subscriber and a gripper action server.
+6. The playback node waits for valid joint states and an active trajectory-controller subscriber.
+7. Playback publishes segmented trajectories that blend from the current pose into the recording when needed.
+8. If the CSV contains `gripper` rows, playback pauses between arm segments and executes those recorded `open` and `close` events.
 
 ## Recorded CSV format
 
@@ -381,8 +389,7 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 ## Known assumptions and caveats
 
 - The playback script expects FR3 joint names `fr3_joint1` through `fr3_joint7`
-- The GUI uses fixed startup delays in a few places, so slow systems may still need more time
-- The run flow currently waits a fixed 3 seconds after starting MoveIt before launching playback, then relies on runtime readiness checks inside the playback node
+- The GUI still depends on ROS 2 / DDS / controller startup health; if the playback controller fails to load, the readiness gate will keep `Run Trajectory` from starting instead of forcing playback anyway
 - CSV files are saved into the repo directory by default unless you provide another path
 - Playback can still trigger a Franka reflex stop such as `power_limit_violation` if the current pose is too far from the recording start, the path is too aggressive, or the robot is under load
 - If playback aborts at the arm-controller level, later gripper events in the same run will not execute because the launched stack is already shutting down

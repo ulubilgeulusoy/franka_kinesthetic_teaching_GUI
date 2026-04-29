@@ -46,6 +46,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from franka_msgs.action import Grasp, Move
+from trajectory_msgs.msg import JointTrajectory
 
 # --------- CONFIG (edit if needed) ---------
 ROBOT_IP = "172.16.0.2"  # change if needed
@@ -57,6 +58,7 @@ GRIPPER_GRASP_FORCE = 40.0
 GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
+RUN_STACK_READY_TIMEOUT_SEC = 20.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
 TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
@@ -141,6 +143,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.current_playback_proc = None
         self.teach_start_time_ns = None
         self.recorded_gripper_events = []
+        self.run_completion_status = None
+        self.run_ready_reason = "Robot is not ready."
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
         self.last_reflex_stop_reason = None
@@ -395,20 +399,26 @@ class FR3TeachRunGUI(tk.Tk):
         self.after(50, self._poll_queue)
 
     def _refresh_controls(self):
+        run_ready, run_reason = self._get_run_ready_state()
+        self.run_ready_reason = run_reason
+
         if self.teaching:
-            self.btn_teach.configure(state="normal")
-            self.btn_run.configure(state="disabled")
-            self.btn_gravity.configure(state="disabled")
-            self.btn_open_dir.configure(state="disabled")
+            teach_enabled = "normal"
+            run_enabled = "disabled"
+            gravity_enabled = "disabled"
+            open_dir_enabled = "disabled"
         else:
-            run_enabled = "disabled" if self.running else "normal"
-            gravity_enabled = "disabled" if self.running else "normal"
             teach_enabled = "disabled" if self.running else "normal"
+            gravity_enabled = "disabled" if self.running else "normal"
             open_dir_enabled = "disabled" if self.running else "normal"
-            self.btn_teach.configure(state=teach_enabled)
-            self.btn_run.configure(state=run_enabled)
-            self.btn_gravity.configure(state=gravity_enabled)
-            self.btn_open_dir.configure(state=open_dir_enabled)
+            run_enabled = "normal" if run_ready else "disabled"
+            if self.running:
+                run_enabled = "disabled"
+
+        self.btn_teach.configure(state=teach_enabled)
+        self.btn_run.configure(state=run_enabled)
+        self.btn_gravity.configure(state=gravity_enabled)
+        self.btn_open_dir.configure(state=open_dir_enabled)
 
         gripper_enabled = "disabled" if self.gripper_busy else "normal"
         self.btn_gripper_open.configure(state=gripper_enabled)
@@ -423,6 +433,23 @@ class FR3TeachRunGUI(tk.Tk):
             or self.gripper_node_pg.is_alive()
         )
         self.btn_kill.configure(state="normal" if any_active else "disabled")
+
+    def _get_run_ready_state(self):
+        if self.running:
+            return False, "Trajectory playback is already running."
+        if self.teaching:
+            return False, "Stop teach mode before running a trajectory."
+        if self.gravity_mode:
+            return False, "Stop gravity mode before running a trajectory."
+        if self.teach_pg.is_alive():
+            return False, "Teach/gravity processes are still shutting down."
+        if self.run_pg.is_alive():
+            return False, "Run processes are still active."
+        if self.gripper_busy:
+            return False, "Wait for the gripper command to finish."
+        if self.gripper_node_pg.is_alive():
+            return False, "Standalone gripper node is still active."
+        return True, "Robot is ready to run."
 
     # Actions
     def on_gravity_toggle(self):
@@ -661,6 +688,58 @@ class FR3TeachRunGUI(tk.Tk):
     def should_use_teach_gripper_server(self):
         return self.teach_pg.is_alive() and (self.teaching or self.gravity_mode)
 
+    def get_run_trajectory_topics(self):
+        topics = ["/fr3_arm_controller/joint_trajectory"]
+        if TEACH_NAMESPACE:
+            topics.insert(0, f"/{TEACH_NAMESPACE}/fr3_arm_controller/joint_trajectory")
+        return topics
+
+    def wait_for_trajectory_controller_subscriber(self, timeout_sec: float = RUN_STACK_READY_TIMEOUT_SEC):
+        self.ensure_ros_client_ready()
+        node = rclpy.create_node(f"trajectory_wait_client_{int(time.time() * 1000)}")
+        publishers = []
+        deadline = time.time() + timeout_sec
+        topics = self.get_run_trajectory_topics()
+        try:
+            publishers = [
+                (topic, node.create_publisher(JointTrajectory, topic, 10))
+                for topic in topics
+            ]
+            while time.time() < deadline:
+                if not self.run_pg.is_alive():
+                    return None
+                for topic, publisher in publishers:
+                    if publisher.get_subscription_count() > 0:
+                        return topic
+                time.sleep(0.1)
+        finally:
+            node.destroy_node()
+        return None
+
+    def wait_for_run_stack_ready(self, timeout_sec: float = RUN_STACK_READY_TIMEOUT_SEC):
+        deadline = time.time() + timeout_sec
+        self.line_queue.put("Waiting for trajectory controller subscriber...")
+        trajectory_topic = self.wait_for_trajectory_controller_subscriber(
+            timeout_sec=max(0.1, deadline - time.time())
+        )
+        if trajectory_topic is None:
+            return None, "Trajectory controller subscriber did not become ready."
+
+        self.line_queue.put(f"Trajectory controller ready: {trajectory_topic}")
+        self.line_queue.put("Ensuring gripper action server is ready after MoveIt startup...")
+        action_name = self.wait_for_gripper_action_server(
+            Move,
+            self.get_gripper_move_action_candidates(),
+            timeout_sec=max(0.1, deadline - time.time()),
+        )
+        if action_name is None:
+            return None, "Gripper action server did not become ready."
+
+        return {
+            "trajectory_topic": trajectory_topic,
+            "gripper_action": action_name,
+        }, None
+
     def send_gripper_move_command(self, width: float, label: str):
         if self.gripper_busy:
             self._append_log("Gripper command already in progress; ignoring new request.")
@@ -829,6 +908,11 @@ class FR3TeachRunGUI(tk.Tk):
         self.send_gripper_close_command(GRIPPER_CLOSE_WIDTH, "Close")
 
     def on_run_clicked(self):
+        run_ready, run_reason = self._get_run_ready_state()
+        if not run_ready:
+            self.status_var.set(run_reason)
+            self._refresh_controls()
+            return
         csv_path = filedialog.askopenfilename(
             title="Select trajectory CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
@@ -842,6 +926,7 @@ class FR3TeachRunGUI(tk.Tk):
             messagebox.showwarning("Already running", "A playback is already running.")
             return
 
+        self.run_completion_status = None
         self._append_log(f"Selected CSV: {csv_path}")
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
@@ -849,32 +934,32 @@ class FR3TeachRunGUI(tk.Tk):
         ))
 
         def delayed_start():
-            time.sleep(3.0)
-            self.line_queue.put("Ensuring gripper action server is ready after MoveIt startup...")
-            action_name = self.wait_for_gripper_action_server(
-                Move, self.get_gripper_move_action_candidates()
-            )
-            if action_name is None:
-                self.line_queue.put("Playback aborted because no gripper action server became available.")
-                self.status_var.set("Gripper action server not available.")
-                self._post_state_update({"running_active": 0})
-                self.running = False
-                self.btn_run.configure(text="Run Trajectory")
-                self._refresh_controls()
+            readiness, error_message = self.wait_for_run_stack_ready()
+            if readiness is None:
+                self.line_queue.put(f"Playback aborted: {error_message}")
+                self.line_queue.put("Shutting down MoveIt and controllers after readiness failure…")
+                self.run_pg.terminate_all(sig=signal.SIGTERM)
+                time.sleep(0.5)
+                self.run_pg.terminate_all(sig=signal.SIGKILL)
+                self.run_pg.clear_finished()
+                self.run_completion_status = error_message
+                self.after(0, lambda: self.status_var.set(error_message))
                 return
-            self.line_queue.put(f"Gripper action server ready: {action_name}")
+            self.line_queue.put(f"Gripper action server ready: {readiness['gripper_action']}")
             self.line_queue.put("Starting trajectory playback…")
             playback_proc = self.run_pg.start(bash_cmd(
                 f"python3 playback_joint_trajectory.py '{csv_path}'"
             ))
             self.current_playback_proc = playback_proc
             self._post_state_update({"running_active": 1})
+            self.after(0, lambda: self.status_var.set("Running trajectory…"))
+            self.after(0, lambda: self.btn_run.configure(text="Running…"))
             threading.Thread(target=self._watch_playback_process, args=(playback_proc,), daemon=True).start()
         threading.Thread(target=delayed_start, daemon=True).start()
 
         self.running = True
-        self.status_var.set("Running trajectory…")
-        self.btn_run.configure(text="Running…")
+        self.status_var.set("Waiting for run readiness…")
+        self.btn_run.configure(text="Preparing…")
         self._refresh_controls()
         threading.Thread(target=self._watch_run_finish, daemon=True).start()
 
@@ -892,9 +977,11 @@ class FR3TeachRunGUI(tk.Tk):
         self.current_playback_proc = None
         self._post_state_update({"running_active": 0})
         self.running = False
+        final_status = self.run_completion_status or "Run finished."
+        self.run_completion_status = None
         # UI updates must be done in main thread; schedule via after
         self.after(0, lambda: self.btn_run.configure(text="Run Trajectory"))
-        self.after(0, lambda: self.status_var.set("Run finished."))
+        self.after(0, lambda: self.status_var.set(final_status))
         self.after(0, self._refresh_controls)
 
     def kill_all(self):
