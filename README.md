@@ -118,9 +118,11 @@ It then waits for the playback stack to become ready before running [`playback_j
 ### Teach mode
 
 - `Start Teach (Record)` is the full recording workflow, not just a gravity-compensation shortcut
-- If the reduced teach stack is not already running, `Start Teach (Record)` launches it first
+- If the reduced teach stack is not already running, `Start Teach (Record)` arms the recorder first and only then enables gravity compensation
+- This avoids the old startup window where the arm could already be movable before the recorder had latched a valid Franka joint-state topic
 - If `Start Gravity Mode` is already active, `Start Teach (Record)` reuses that running stack and starts only the recorder
 - Records joint motion while the arm is moved by hand
+- The GUI waits for the recorder to latch a usable joint-state topic before it marks teaching as active
 - Publishes `teaching_active = 1` while recording is active and clears it when recording stops
 - `Start Teach (Record)` prompts for an optional CSV filename before recording starts
 - `Start Teach (Record)` starts `record_joint_trajectory.py` and stores the target CSV path
@@ -227,9 +229,10 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 
 - `Start Teach (Record)` begins the teaching workflow.
 - It first prompts for an optional CSV filename. If you leave it blank, the GUI creates a timestamped filename.
-- If gravity compensation is not already active, the GUI starts the reduced teach stack so the arm can be moved by hand.
+- If gravity compensation is not already active, the GUI starts the recorder first and only then starts the reduced teach stack so the arm can be moved by hand.
 - If gravity compensation is already active, the GUI keeps that stack running and starts only the recorder.
-- The GUI then starts `record_joint_trajectory.py`, sets `teaching_active = 1`, changes the button label to `Stop Teach (Save)`, and waits while you demonstrate the motion by moving the arm.
+- The GUI waits for `record_joint_trajectory.py` to latch a usable Franka joint-state topic before it sets `teaching_active = 1`, changes the button label to `Stop Teach (Save)`, and shows the active recording status.
+- The operator should not move the robot until the GUI indicates that recording is active.
 - While teaching is active, `Run Trajectory`, `Start Gravity Mode`, and `Open CSV Dir…` are disabled so the recording session is not interrupted.
 - Any `Open Gripper` and `Close Gripper` presses during teaching are timestamped so they can be added to the same recording.
 - When you click `Stop Teach (Save)`, the GUI stops the recorder and teach processes, appends any recorded gripper events to the CSV, clears `teaching_active`, and changes the button back to `Start Teach (Record)`.
@@ -306,10 +309,11 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 1. Optionally click `Start Gravity Mode` if you want gravity compensation without recording yet.
 2. Click `Start Teach (Record)`.
 3. Optionally enter a custom CSV filename, or leave it blank for a timestamped default.
-4. Wait for the recorder to start receiving valid Franka joint states.
-5. Only then move the arm by hand to demonstrate the motion.
-6. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions recorded.
-7. Click `Stop Teach (Save)`.
+4. If the teach stack is not already running, let the GUI arm the recorder before gravity compensation becomes active.
+5. Wait for the recorder to start receiving valid Franka joint states and for the GUI to indicate that recording is active.
+6. Only then move the arm by hand to demonstrate the motion.
+7. Optionally use `Open Gripper` or `Close Gripper` during teaching if you want those actions recorded.
+8. Click `Stop Teach (Save)`.
 
 ### Play back a trajectory
 
@@ -323,6 +327,10 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 8. If you click `Pause`, the active arm trajectory is canceled and the arm is held at its current pose.
 9. If you click `Resume`, playback rebuilds one new continuous trajectory from the current pose into the remaining recorded path.
 10. If the CSV contains `gripper` rows, playback holds the arm only when those recorded `open` and `close` events must execute.
+
+Recent validated behavior:
+- the recorder-first teach startup reduced a previously bad start mismatch from about `0.933 rad` to about `0.335 rad` in the next recorded run
+- that later run completed successfully, with only software torque auto-pauses and clean resumes
 
 ## Recorded CSV format
 

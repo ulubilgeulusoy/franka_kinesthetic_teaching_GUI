@@ -60,6 +60,7 @@ GRIPPER_EPSILON_INNER = 0.005
 GRIPPER_EPSILON_OUTER = 0.08
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
 RUN_STACK_READY_TIMEOUT_SEC = 20.0
+RECORDER_READY_TIMEOUT_SEC = 10.0
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEACH_ROBOT_CONFIG = os.path.join(SCRIPT_DIR, "franka_teach.config.yaml")
 TEACH_LAUNCH_FILE = os.path.join(SCRIPT_DIR, "franka_teach_minimal.launch.py")
@@ -149,6 +150,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.playback_paused = False
         self.playback_control_path = None
         self.playback_control_seq = 0
+        self.recorder_ready_path = None
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
         self.last_reflex_stop_reason = None
@@ -361,6 +363,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.gravity_mode = False
         self.teach_start_time_ns = None
         self.current_recording_filename = None
+        self.recorder_ready_path = None
         self.current_playback_proc = None
         self.recorded_gripper_events = []
         self.btn_teach.configure(text="Start Teach (Record)")
@@ -553,12 +556,6 @@ class FR3TeachRunGUI(tk.Tk):
             custom_name = ""
         custom_name = custom_name.strip()
 
-        if not self.gravity_mode:
-            self.launch_gravity_controller()
-            time.sleep(1.0)
-        else:
-            self._append_log("Gravity compensation already active; starting recorder only...")
-
         if custom_name:
             if not custom_name.endswith(".csv"):
                 custom_name += ".csv"
@@ -568,18 +565,60 @@ class FR3TeachRunGUI(tk.Tk):
             recording_filename = f"joint_trajectory_{timestamp}.csv"
 
         recording_path = os.path.abspath(os.path.join(SCRIPT_DIR, recording_filename))
-        recorder_cmd = f"python3 record_joint_trajectory.py {shlex.quote(recording_path)}"
+        ready_fd, ready_path = tempfile.mkstemp(prefix="fr3_recorder_ready_", suffix=".flag")
+        os.close(ready_fd)
+        os.unlink(ready_path)
+        self.recorder_ready_path = ready_path
+        recorder_cmd = (
+            f"python3 record_joint_trajectory.py "
+            f"{shlex.quote(recording_path)} {shlex.quote(ready_path)}"
+        )
         self._append_log(f"Starting joint recorder... output file: {recording_path}")
 
         self.current_recording_filename = recording_path
-        self.teach_start_time_ns = time.time_ns()
-        self.recorded_gripper_events = []
         self.teach_pg.start(bash_cmd(recorder_cmd))
 
-        self.teaching = True
-        self._post_state_update({"teaching_active": 1})
-        self.btn_teach.configure(text="Stop Teach (Save)")
-        self.status_var.set("Recording… Move arm by hand to teach.")
+        started_gravity_for_teach = not self.gravity_mode
+        if started_gravity_for_teach:
+            self.status_var.set("Arming recorder before enabling gravity compensation…")
+            self.launch_gravity_controller()
+        else:
+            self._append_log("Gravity compensation already active; waiting for recorder to arm...")
+            self.status_var.set("Waiting for recorder to arm… Hold the robot still.")
+
+        def finish_teach_start():
+            deadline = time.time() + RECORDER_READY_TIMEOUT_SEC
+            while time.time() < deadline:
+                if self.recorder_ready_path and os.path.exists(self.recorder_ready_path):
+                    break
+                if not self.teach_pg.is_alive():
+                    self.line_queue.put("Teach startup failed before recorder became ready.")
+                    return
+                time.sleep(0.05)
+
+            if not self.recorder_ready_path or not os.path.exists(self.recorder_ready_path):
+                self.line_queue.put("Recorder did not become ready in time; stopping teach startup.")
+                self.teach_pg.terminate_all(sig=signal.SIGINT)
+                time.sleep(0.5)
+                self.teach_pg.terminate_all(sig=signal.SIGTERM)
+                self.teach_pg.clear_finished()
+                if started_gravity_for_teach:
+                    self.gravity_mode = False
+                    self.after(0, lambda: self.btn_gravity.configure(text="Start Gravity Mode"))
+                self.after(0, lambda: self.btn_teach.configure(text="Start Teach (Record)"))
+                self.after(0, lambda: self.status_var.set("Recorder did not become ready in time."))
+                self.after(0, self._refresh_controls)
+                return
+
+            self.teach_start_time_ns = time.time_ns()
+            self.recorded_gripper_events = []
+            self.teaching = True
+            self._post_state_update({"teaching_active": 1})
+            self.after(0, lambda: self.btn_teach.configure(text="Stop Teach (Save)"))
+            self.after(0, lambda: self.status_var.set("Recording… Move arm by hand to teach."))
+            self.after(0, self._refresh_controls)
+
+        threading.Thread(target=finish_teach_start, daemon=True).start()
         self._refresh_controls()
 
     def stop_teach(self):

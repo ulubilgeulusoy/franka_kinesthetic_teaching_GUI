@@ -1,4 +1,5 @@
 import csv
+import os
 import sys
 from datetime import datetime
 
@@ -28,8 +29,10 @@ DEFAULT_POSE_TOLERANCE_RAD = 0.02
 
 
 class JointRecorder(Node):
-    def __init__(self):
+    def __init__(self, ready_file=None):
         super().__init__("joint_recorder")
+        self.ready_file = ready_file
+        self.ready_file_written = False
         self.joint_state_subscriptions = []
         for topic in JOINT_STATE_TOPICS:
             self.joint_state_subscriptions.append(
@@ -88,11 +91,22 @@ class JointRecorder(Node):
         self.active_joint_topic = source_topic
         self.start_time = buffered_samples[0][0]
         self.get_logger().info(f"Recording joint states from {source_topic}")
+        self._write_ready_file()
         self.selection_timer.cancel()
         for sample_time_ns, ordered_positions in buffered_samples:
             timestamp = sample_time_ns - self.start_time
             self.joint_data.append([timestamp] + ordered_positions)
         self.pending_samples = {topic: [] for topic in JOINT_STATE_TOPICS}
+
+    def _write_ready_file(self):
+        if self.ready_file_written or not self.ready_file:
+            return
+        try:
+            with open(self.ready_file, "w", encoding="utf-8") as handle:
+                handle.write(self.active_joint_topic or "")
+            self.ready_file_written = True
+        except OSError as exc:
+            self.get_logger().warn(f"Failed to write recorder ready file {self.ready_file}: {exc}")
 
     def listener_callback(self, msg, source_topic):
         joint_map = dict(zip(msg.name, msg.position))
@@ -148,7 +162,10 @@ def build_output_filename():
 
 def main(args=None):
     rclpy.init(args=args)
-    recorder = JointRecorder()
+    ready_file = None
+    if len(sys.argv) >= 3 and sys.argv[2].strip():
+        ready_file = sys.argv[2].strip()
+    recorder = JointRecorder(ready_file=ready_file)
 
     try:
         rclpy.spin(recorder)
