@@ -1,9 +1,12 @@
 import csv
+import json
+import os
 import sys
 import threading
 import time
 
 import rclpy
+from control_msgs.action import FollowJointTrajectory
 from franka_msgs.action import Grasp, Move
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -20,7 +23,8 @@ TOLERANCE = 0.05  # rad
 START_BLEND_EPSILON_RAD = 0.005
 WAIT_FOR_STATE_TIMEOUT_SEC = 15
 WAIT_FOR_CONTROLLER_TIMEOUT_SEC = 20
-PLAYBACK_COMPLETION_BUFFER_SEC = 2.0
+PLAYBACK_COMPLETION_BUFFER_SEC = 0.05
+PAUSE_POLL_SEC = 0.05
 GRIPPER_EVENT_SETTLE_SEC = 0.75
 INITIAL_SETTLE_SEC = 0.10
 SMOOTHING_WINDOW = 3  # odd number of samples for moving-average smoothing
@@ -47,6 +51,7 @@ TEACH_NAMESPACE = "NS_1"
 NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
 JOINT_STATES_TOPICS = ["/joint_states"]
 TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
+TRAJECTORY_ACTIONS = ["/fr3_arm_controller/follow_joint_trajectory"]
 if NAMESPACE_PREFIX:
     JOINT_STATES_TOPICS = [
         f"{NAMESPACE_PREFIX}/franka/joint_states",
@@ -54,6 +59,7 @@ if NAMESPACE_PREFIX:
         *JOINT_STATES_TOPICS,
     ]
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
+    TRAJECTORY_ACTIONS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/follow_joint_trajectory")
 TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATES_TOPICS)}
 PREFERRED_JOINT_STATE_TOPIC = JOINT_STATES_TOPICS[0]
 PREFERRED_TOPIC_GRACE_SEC = 2.0
@@ -75,9 +81,10 @@ UPPER_JOINT_LIMITS = [2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159]
 
 
 class SmartTrajectoryPlayer(Node):
-    def __init__(self, csv_file):
+    def __init__(self, csv_file, control_file=None):
         super().__init__("smart_trajectory_player")
         self.csv_file = csv_file
+        self.control_file = control_file
         self.trajectory_publishers = [
             self.create_publisher(JointTrajectory, topic, 10)
             for topic in TRAJECTORY_TOPICS
@@ -102,14 +109,19 @@ class SmartTrajectoryPlayer(Node):
         self.execution_start_time = None
         self.execution_complete_timer = None
         self.stop_requested = False
+        self.pause_requested = False
+        self.last_control_seq = None
         self.gripper_action_lock = threading.Lock()
+        self.trajectory_action_lock = threading.Lock()
         self.playback_thread = None
         self.limit_adjustment_counts = [0] * len(JOINT_NAMES)
+        self.current_goal_handle = None
 
         self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
             raise RuntimeError(f"No trajectory points loaded from {csv_file}")
         self.start_position = self.recorded_points[0][1]
+        self.last_recorded_time = self.recorded_points[-1][0]
 
         self.timer = self.create_timer(0.5, self.update)
 
@@ -315,41 +327,16 @@ class SmartTrajectoryPlayer(Node):
         )
         self.playback_thread.start()
 
-    def build_execution_trajectory(self):
-        timeline = self.build_playback_timeline()
-        timed_points = []
-        for segment in timeline["segments"]:
-            if segment["type"] == "trajectory":
-                timed_points.extend(segment["absolute_points"])
+    def build_playback_timeline(self, start_positions, playback_points, gripper_events):
+        if not playback_points:
+            return {
+                "blend_time": 0.0,
+                "segments": [],
+                "total_duration": 0.0,
+            }
 
-        traj = JointTrajectory()
-        traj.joint_names = JOINT_NAMES
-        traj.header.stamp = self.get_clock().now().to_msg()
-
-        previous_time = 0.0
-        previous_positions = self.actual_positions
-        for point_time, positions in timed_points:
-            point = JointTrajectoryPoint()
-            point.positions = positions
-            segment_dt = max(point_time - previous_time, MIN_SEGMENT_DT)
-            point.velocities = [
-                (pos - prev_pos) / segment_dt
-                for pos, prev_pos in zip(positions, previous_positions)
-            ]
-            point.time_from_start.sec = int(point_time)
-            point.time_from_start.nanosec = int((point_time % 1) * 1e9)
-            traj.points.append(point)
-            previous_time = point_time
-            previous_positions = positions
-
-        if traj.points:
-            # The joint trajectory controller expects the final waypoint to end at rest.
-            traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
-
-        return traj, timeline["blend_time"], previous_time
-
-    def build_playback_timeline(self):
-        start_error = self.max_joint_error(self.actual_positions, self.start_position)
+        start_position = playback_points[0][1]
+        start_error = self.max_joint_error(start_positions, start_position)
         blend_time = self.compute_blend_time(start_error)
         current_time = 0.0
         blend_points = []
@@ -363,10 +350,10 @@ class SmartTrajectoryPlayer(Node):
                 eased_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
                 positions = [
                     current + eased_alpha * (target - current)
-                    for current, target in zip(self.actual_positions, self.start_position)
+                    for current, target in zip(start_positions, start_position)
                 ]
                 current_time += blend_step_dt
-                blend_points.append((current_time, positions))
+                blend_points.append((current_time, positions, False))
             self.get_logger().info(
                 f"Current pose differs from trajectory start by {start_error:.3f} rad; "
                 f"blending over {blend_time:.2f} s"
@@ -374,11 +361,11 @@ class SmartTrajectoryPlayer(Node):
         else:
             self.get_logger().info("Current pose already near trajectory start; skipping blend-in move")
             current_time = INITIAL_SETTLE_SEC
-            blend_points.append((current_time, list(self.start_position)))
+            blend_points.append((current_time, list(start_position), False))
 
         event_entries = [
             {"type": "gripper", "time": event_time, "event_name": event_name}
-            for event_time, event_name in self.gripper_events
+            for event_time, event_name in gripper_events
         ]
         event_entries.sort(key=lambda item: item["time"])
 
@@ -387,15 +374,21 @@ class SmartTrajectoryPlayer(Node):
         event_index = 0
         current_segment_points = list(blend_points)
 
-        for dt, positions in self.recorded_points:
+        for dt, positions in playback_points:
             while event_index < len(event_entries) and dt >= event_entries[event_index]["time"]:
                 if current_segment_points:
                     segment_start = current_segment_points[0][0]
                     segments.append({
                         "type": "trajectory",
                         "absolute_points": current_segment_points,
-                        "timed_points": [(t - segment_start, p) for t, p in current_segment_points],
+                        "timed_points": [(t - segment_start, p) for t, p, _ in current_segment_points],
+                        "recorded_timed_points": [
+                            (t - segment_start, p)
+                            for t, p, is_recorded in current_segment_points
+                            if is_recorded
+                        ],
                         "duration": current_segment_points[-1][0] - segment_start,
+                        "recorded_count": sum(1 for _, _, is_recorded in current_segment_points if is_recorded),
                     })
                     current_segment_points = []
                 segments.append(event_entries[event_index])
@@ -406,7 +399,7 @@ class SmartTrajectoryPlayer(Node):
             else:
                 delta_dt = max(dt - previous_recorded_dt, MIN_POINT_DT)
             current_time += delta_dt
-            current_segment_points.append((current_time, positions))
+            current_segment_points.append((current_time, positions, True))
             previous_recorded_dt = dt
 
         if current_segment_points:
@@ -414,8 +407,14 @@ class SmartTrajectoryPlayer(Node):
             segments.append({
                 "type": "trajectory",
                 "absolute_points": current_segment_points,
-                "timed_points": [(t - segment_start, p) for t, p in current_segment_points],
+                "timed_points": [(t - segment_start, p) for t, p, _ in current_segment_points],
+                "recorded_timed_points": [
+                    (t - segment_start, p)
+                    for t, p, is_recorded in current_segment_points
+                    if is_recorded
+                ],
                 "duration": current_segment_points[-1][0] - segment_start,
+                "recorded_count": sum(1 for _, _, is_recorded in current_segment_points if is_recorded),
             })
 
         while event_index < len(event_entries):
@@ -428,10 +427,7 @@ class SmartTrajectoryPlayer(Node):
             "total_duration": current_time,
         }
 
-    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
-        if not timed_points:
-            return 0.0
-
+    def build_trajectory_message(self, timed_points, start_positions):
         traj = JointTrajectory()
         traj.joint_names = JOINT_NAMES
         traj.header.stamp = self.get_clock().now().to_msg()
@@ -457,40 +453,241 @@ class SmartTrajectoryPlayer(Node):
             # Ensure the controller sees a zero terminal velocity at the end of each segment.
             traj.points[-1].velocities = [0.0] * len(JOINT_NAMES)
 
+        return traj
+
+    def publish_trajectory_segment(self, ready_publishers, timed_points, start_positions):
+        if not timed_points:
+            return 0.0
+        traj = self.build_trajectory_message(timed_points, start_positions)
         for publisher in ready_publishers:
             publisher.publish(traj)
         return timed_points[-1][0]
 
+    def publish_hold_position(self, ready_publishers, hold_positions, hold_duration=0.25):
+        traj = JointTrajectory()
+        traj.joint_names = JOINT_NAMES
+        traj.header.stamp = self.get_clock().now().to_msg()
+
+        point = JointTrajectoryPoint()
+        point.positions = list(hold_positions)
+        point.velocities = [0.0] * len(JOINT_NAMES)
+        point.time_from_start.sec = int(hold_duration)
+        point.time_from_start.nanosec = int((hold_duration % 1) * 1e9)
+        traj.points.append(point)
+
+        for publisher in ready_publishers:
+            publisher.publish(traj)
+
+    def wait_for_trajectory_action(self):
+        action_clients = []
+        try:
+            for action_name in TRAJECTORY_ACTIONS:
+                client = ActionClient(self, FollowJointTrajectory, action_name)
+                action_clients.append(client)
+                if client.wait_for_server(timeout_sec=0.5):
+                    return action_name, client
+        finally:
+            pass
+        for client in action_clients:
+            client.destroy()
+        return None, None
+
+    def execute_trajectory_segment_action(self, timed_points, start_positions, recorded_timed_points):
+        if not timed_points:
+            return "completed", timed_points[-1][1] if timed_points else start_positions, 0
+
+        action_name, client = self.wait_for_trajectory_action()
+        if action_name is None:
+            raise RuntimeError(
+                "No trajectory action server found. Expected one of: " + ", ".join(TRAJECTORY_ACTIONS)
+            )
+        try:
+            goal_msg = FollowJointTrajectory.Goal()
+            goal_msg.trajectory = self.build_trajectory_message(timed_points, start_positions)
+            self.get_logger().info(
+                f"Executing continuous trajectory segment with {len(timed_points)} point(s) over {timed_points[-1][0]:.2f} s via {action_name}"
+            )
+            send_future = client.send_goal_async(goal_msg)
+            while rclpy.ok() and not send_future.done():
+                self.update_control_state()
+                if self.stop_requested:
+                    return "stopped", start_positions
+                time.sleep(PAUSE_POLL_SEC)
+
+            goal_handle = send_future.result()
+            if goal_handle is None or not goal_handle.accepted:
+                raise RuntimeError(f"Trajectory segment goal was not accepted by {action_name}")
+
+            self.current_goal_handle = goal_handle
+            result_future = goal_handle.get_result_async()
+            goal_start_time = time.monotonic()
+            while rclpy.ok() and not result_future.done():
+                self.update_control_state()
+                if self.pause_requested:
+                    elapsed_time = time.monotonic() - goal_start_time
+                    consumed_points = self.estimate_consumed_recorded_points(
+                        recorded_timed_points,
+                        self.actual_positions,
+                        elapsed_time,
+                    )
+                    cancel_future = goal_handle.cancel_goal_async()
+                    while rclpy.ok() and not cancel_future.done():
+                        time.sleep(PAUSE_POLL_SEC)
+                    self.current_goal_handle = None
+                    return "paused", self.actual_positions[:] if self.actual_positions is not None else start_positions, consumed_points
+                if self.stop_requested:
+                    cancel_future = goal_handle.cancel_goal_async()
+                    while rclpy.ok() and not cancel_future.done():
+                        time.sleep(PAUSE_POLL_SEC)
+                    self.current_goal_handle = None
+                    return "stopped", self.actual_positions[:] if self.actual_positions is not None else start_positions, 0
+                time.sleep(PAUSE_POLL_SEC)
+
+            self.current_goal_handle = None
+            result = result_future.result()
+            status = getattr(result, "status", None)
+            if status != 4:
+                raise RuntimeError(f"Trajectory segment action finished with status {status}")
+            return "completed", timed_points[-1][1], len(recorded_timed_points)
+        finally:
+            client.destroy()
+
+    def estimate_consumed_recorded_points(self, recorded_timed_points, current_positions, elapsed_time):
+        if not recorded_timed_points or current_positions is None:
+            return 0
+
+        if elapsed_time <= 0.0:
+            candidate_limit = 1
+        else:
+            candidate_limit = 0
+            for point_time, _ in recorded_timed_points:
+                if point_time <= elapsed_time + PLAYBACK_COMPLETION_BUFFER_SEC:
+                    candidate_limit += 1
+            candidate_limit = max(1, candidate_limit)
+
+        best_index = 0
+        best_error = None
+        search_points = recorded_timed_points[:candidate_limit]
+        for index, (_, point_positions) in enumerate(search_points, start=1):
+            error = self.max_joint_error(current_positions, point_positions)
+            if best_error is None or error < best_error:
+                best_error = error
+                best_index = index
+        return best_index
+
+    def update_control_state(self):
+        if not self.control_file or not os.path.exists(self.control_file):
+            return
+        try:
+            with open(self.control_file, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return
+
+        seq = payload.get("seq")
+        if seq == self.last_control_seq:
+            return
+
+        self.last_control_seq = seq
+        command = payload.get("command")
+        if command == "pause":
+            self.pause_requested = True
+            self.get_logger().info("Pause requested by GUI")
+        elif command == "resume":
+            self.pause_requested = False
+            self.get_logger().info("Resume requested by GUI")
+        elif command == "stop":
+            self.get_logger().info("Stop requested by GUI")
+            self.request_stop()
+
+    def sleep_with_control(self, duration):
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            if self.stop_requested:
+                return False
+            self.update_control_state()
+            if self.pause_requested:
+                return False
+            time.sleep(min(PAUSE_POLL_SEC, max(0.0, deadline - time.monotonic())))
+        return True
+
+    def wait_until_resumed(self, ready_publishers):
+        hold_published = False
+        while not self.stop_requested and self.pause_requested:
+            if self.actual_positions is not None and not hold_published:
+                self.publish_hold_position(ready_publishers, self.actual_positions)
+                self.get_logger().info("Playback paused; holding current pose until resume")
+                hold_published = True
+            self.update_control_state()
+            time.sleep(PAUSE_POLL_SEC)
+
+        if not self.stop_requested and hold_published:
+            self.get_logger().info("Playback resumed; rebuilding remaining trajectory from current pose")
+
     def run_segmented_playback(self, ready_publishers):
         try:
-            timeline = self.build_playback_timeline()
             current_positions = self.actual_positions[:]
+            current_point_index = 0
+            next_event_index = 0
             total_runtime = 0.0
 
-            for entry in timeline["segments"]:
+            while current_point_index < len(self.recorded_points) or next_event_index < len(self.gripper_events):
+                self.update_control_state()
                 if self.stop_requested:
                     return
+                if self.pause_requested:
+                    self.wait_until_resumed(ready_publishers)
+                    if self.stop_requested:
+                        return
+                    if self.actual_positions is not None:
+                        current_positions = self.actual_positions[:]
+                    continue
 
-                if entry["type"] == "trajectory":
-                    duration = self.publish_trajectory_segment(
-                        ready_publishers,
-                        entry["timed_points"],
-                        current_positions,
-                    )
-                    if duration > 0.0:
-                        self.get_logger().info(
-                            f"Publishing trajectory segment with {len(entry['timed_points'])} point(s) over {duration:.2f} s"
+                remaining_points = self.recorded_points[current_point_index:]
+                remaining_events = self.gripper_events[next_event_index:]
+                timeline = self.build_playback_timeline(current_positions, remaining_points, remaining_events)
+
+                for entry in timeline["segments"]:
+                    if self.stop_requested:
+                        return
+                    if self.pause_requested:
+                        break
+                    if entry["type"] == "trajectory":
+                        duration = entry["timed_points"][-1][0] if entry["timed_points"] else 0.0
+                        status, end_positions, consumed_points = self.execute_trajectory_segment_action(
+                            entry["timed_points"],
+                            current_positions,
+                            entry["recorded_timed_points"],
                         )
-                        time.sleep(duration + PLAYBACK_COMPLETION_BUFFER_SEC)
-                        total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
-                        current_positions = entry["timed_points"][-1][1]
-                elif entry["type"] == "gripper":
-                    self.get_logger().info(
-                        f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
-                    )
-                    self.execute_timed_gripper_event(entry["event_name"])
-                    time.sleep(GRIPPER_EVENT_SETTLE_SEC)
-                    total_runtime += GRIPPER_EVENT_SETTLE_SEC
+                        if status == "completed":
+                            total_runtime += duration + PLAYBACK_COMPLETION_BUFFER_SEC
+                            current_positions = end_positions
+                            current_point_index += consumed_points
+                            if not self.sleep_with_control(PLAYBACK_COMPLETION_BUFFER_SEC):
+                                break
+                        elif status == "paused":
+                            if end_positions is not None:
+                                current_positions = end_positions
+                            current_point_index += consumed_points
+                            break
+                        else:
+                            return
+                    elif entry["type"] == "gripper":
+                        self.get_logger().info(
+                            f"Holding arm trajectory for recorded gripper event '{entry['event_name']}' at {entry['time']:.2f} s"
+                        )
+                        self.execute_timed_gripper_event(entry["event_name"])
+                        next_event_index += 1
+                        if not self.sleep_with_control(GRIPPER_EVENT_SETTLE_SEC):
+                            break
+                        total_runtime += GRIPPER_EVENT_SETTLE_SEC
+
+                if self.stop_requested:
+                    return
+                if self.pause_requested:
+                    continue
+                if self.actual_positions is not None:
+                    current_positions = self.actual_positions[:]
 
             self.get_logger().info(
                 f"Segmented playback finished in {total_runtime:.2f} s; shutting down trajectory player"
@@ -595,10 +792,11 @@ class SmartTrajectoryPlayer(Node):
 def main(args=None):
     rclpy.init(args=args)
     if len(sys.argv) < 2:
-        print("Usage: playback_joint_trajectory_smart.py <trajectory.csv>")
+        print("Usage: playback_joint_trajectory_smart.py <trajectory.csv> [control.json]")
         return
 
-    node = SmartTrajectoryPlayer(sys.argv[1])
+    control_file = sys.argv[2] if len(sys.argv) >= 3 else None
+    node = SmartTrajectoryPlayer(sys.argv[1], control_file)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:

@@ -68,6 +68,8 @@ The GUI exposes these actions:
 - `Open Gripper`
 - `Close Gripper`
 - `Run Trajectory`
+- `Pause`
+- `Resume`
 - `Kill`
 
 ## Repo contents
@@ -77,7 +79,7 @@ The GUI exposes these actions:
 - `franka_teach_minimal.launch.py`: reduced teach/gravity launch used by the GUI
 - `franka_teach.config.yaml`: robot config passed into the minimal teach launch
 - `record_joint_trajectory.py`: records joint states to CSV
-- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, publishes segmented arm trajectories, and replays recorded gripper events
+- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, executes continuous arm trajectories, supports pause/resume, and replays recorded gripper events
 
 ## How the GUI uses the launch files
 
@@ -162,7 +164,11 @@ It then waits for the playback stack to become ready before running [`playback_j
 - Smooths recorded waypoints during playback
 - Applies a small replay-only inward joint-limit margin before sending points to `fr3_arm_controller`
 - Blends from the robot's current joint pose into the recorded trajectory start when needed
-- Publishes segmented arm trajectories and pauses between segments to execute recorded gripper events
+- Executes continuous arm trajectories through `follow_joint_trajectory` during normal playback
+- Supports `Pause` and `Resume` during playback
+- On pause, cancels the active arm trajectory goal and holds the current pose
+- On resume, rebuilds one new continuous trajectory from the current pose into the remaining recorded path
+- Holds the arm only when recorded gripper events must execute
 - Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
 - On `Humble_KT_failsafe`, playback still runs through the normal MoveIt / `fr3_arm_controller` stack even though teach / gravity uses the experimental soft-stop controller
 
@@ -235,6 +241,14 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 - Changes its label to `Running…` while playback is in progress.
 - Re-enables the rest of the GUI when playback finishes or aborts.
 
+#### `Pause` / `Resume`
+
+- `Pause` is available only while trajectory playback is running.
+- `Pause` cancels the active continuous arm trajectory goal and commands the arm to hold its current pose.
+- `Resume` is available only after a successful pause.
+- `Resume` rebuilds the remaining path from the robot's current measured pose and continues from the remaining recorded points instead of restarting the full trajectory.
+- Normal playback is continuous; pause/resume interrupts and reissues continuous execution only when requested.
+
 #### `Kill`
 
 - Immediately sends termination signals to all teach, playback, and temporary gripper processes started by the GUI.
@@ -299,8 +313,10 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 4. The GUI launches the FR3 MoveIt/controller stack and enters `Preparing…`.
 5. The GUI waits for a trajectory-controller subscriber and a gripper action server.
 6. The playback node waits for valid joint states and an active trajectory-controller subscriber.
-7. Playback publishes segmented trajectories that blend from the current pose into the recording when needed.
-8. If the CSV contains `gripper` rows, playback pauses between arm segments and executes those recorded `open` and `close` events.
+7. Playback executes a continuous arm trajectory that blends from the current pose into the recording when needed.
+8. If you click `Pause`, the active arm trajectory is canceled and the arm is held at its current pose.
+9. If you click `Resume`, playback rebuilds one new continuous trajectory from the current pose into the remaining recorded path.
+10. If the CSV contains `gripper` rows, playback holds the arm only when those recorded `open` and `close` events must execute.
 
 ## Recorded CSV format
 
@@ -357,6 +373,14 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 - `close` events use the Franka gripper `Grasp` action
 - The arm trajectory is intentionally held while each gripper event executes
 - Playback expects an already-running gripper action server, typically from the MoveIt launch started by the GUI
+
+### Pause and resume behavior
+
+- Normal arm playback is issued as a continuous `FollowJointTrajectory` action goal
+- `Pause` cancels the active trajectory goal instead of chunking normal playback into short segments
+- After cancelation, the player holds the current pose
+- `Resume` estimates already-consumed recorded points, then rebuilds a new continuous goal for the remaining path
+- Re-blending happens on startup and after an actual resume, not continuously during normal playback
 
 ### Replay safety margin
 

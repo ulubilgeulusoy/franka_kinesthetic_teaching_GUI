@@ -4,6 +4,7 @@ import os
 import shlex
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import json
@@ -145,6 +146,9 @@ class FR3TeachRunGUI(tk.Tk):
         self.recorded_gripper_events = []
         self.run_completion_status = None
         self.run_ready_reason = "Robot is not ready."
+        self.playback_paused = False
+        self.playback_control_path = None
+        self.playback_control_seq = 0
         self.last_teach_failure = None
         self.last_teach_failure_time = 0.0
         self.last_reflex_stop_reason = None
@@ -261,6 +265,12 @@ class FR3TeachRunGUI(tk.Tk):
 
         self.btn_run = ttk.Button(left_top, text="Run Trajectory", command=self.on_run_clicked)
         self.btn_run.pack(side="left")
+
+        self.btn_pause = ttk.Button(left_top, text="Pause", command=self.pause_run)
+        self.btn_pause.pack(side="left", padx=(8, 0))
+
+        self.btn_resume = ttk.Button(left_top, text="Resume", command=self.resume_run)
+        self.btn_resume.pack(side="left", padx=(8, 0))
 
         self.btn_kill = tk.Button(
             top_row,
@@ -419,6 +429,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.btn_run.configure(state=run_enabled)
         self.btn_gravity.configure(state=gravity_enabled)
         self.btn_open_dir.configure(state=open_dir_enabled)
+        self.btn_pause.configure(state="normal" if self.running and not self.playback_paused else "disabled")
+        self.btn_resume.configure(state="normal" if self.running and self.playback_paused else "disabled")
 
         gripper_enabled = "disabled" if self.gripper_busy else "normal"
         self.btn_gripper_open.configure(state=gripper_enabled)
@@ -921,12 +933,48 @@ class FR3TeachRunGUI(tk.Tk):
             return
         self.start_run(csv_path)
 
+    def _write_playback_control(self, command: str):
+        if not self.playback_control_path:
+            return False
+        self.playback_control_seq += 1
+        payload = {
+            "seq": self.playback_control_seq,
+            "command": command,
+        }
+        with open(self.playback_control_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        return True
+
+    def pause_run(self):
+        if not self.running or self.playback_paused or self.current_playback_proc is None:
+            return
+        if self._write_playback_control("pause"):
+            self.playback_paused = True
+            self._append_log("Pause requested for trajectory playback…")
+            self.status_var.set("Pausing trajectory…")
+            self._refresh_controls()
+
+    def resume_run(self):
+        if not self.running or not self.playback_paused or self.current_playback_proc is None:
+            return
+        if self._write_playback_control("resume"):
+            self.playback_paused = False
+            self._append_log("Resume requested for trajectory playback…")
+            self.status_var.set("Running trajectory…")
+            self._refresh_controls()
+
     def start_run(self, csv_path: str):
         if self.running:
             messagebox.showwarning("Already running", "A playback is already running.")
             return
 
         self.run_completion_status = None
+        self.playback_paused = False
+        control_fd, control_path = tempfile.mkstemp(prefix="fr3_playback_control_", suffix=".json")
+        os.close(control_fd)
+        self.playback_control_path = control_path
+        self.playback_control_seq = 0
+        self._write_playback_control("resume")
         self._append_log(f"Selected CSV: {csv_path}")
         self.status_var.set("Starting MoveIt and controllers…")
         self.run_pg.start(bash_cmd(
@@ -948,7 +996,7 @@ class FR3TeachRunGUI(tk.Tk):
             self.line_queue.put(f"Gripper action server ready: {readiness['gripper_action']}")
             self.line_queue.put("Starting trajectory playback…")
             playback_proc = self.run_pg.start(bash_cmd(
-                f"python3 playback_joint_trajectory.py '{csv_path}'"
+                f"python3 playback_joint_trajectory.py '{csv_path}' '{self.playback_control_path}'"
             ))
             self.current_playback_proc = playback_proc
             self._post_state_update({"running_active": 1})
@@ -975,6 +1023,10 @@ class FR3TeachRunGUI(tk.Tk):
         while self.run_pg.is_alive():
             time.sleep(0.5)
         self.current_playback_proc = None
+        self.playback_paused = False
+        if self.playback_control_path and os.path.exists(self.playback_control_path):
+            os.unlink(self.playback_control_path)
+        self.playback_control_path = None
         self._post_state_update({"running_active": 0})
         self.running = False
         final_status = self.run_completion_status or "Run finished."
@@ -1005,6 +1057,10 @@ class FR3TeachRunGUI(tk.Tk):
         self._post_state_update({"teaching_active": 0, "running_active": 0})
         self._post_state_update({"running_active": 0})
         self.running = False
+        self.playback_paused = False
+        if self.playback_control_path and os.path.exists(self.playback_control_path):
+            os.unlink(self.playback_control_path)
+        self.playback_control_path = None
         self.teach_start_time_ns = None
         self.current_recording_filename = None
         self.current_playback_proc = None
