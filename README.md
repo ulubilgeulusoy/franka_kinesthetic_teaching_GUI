@@ -79,7 +79,7 @@ The GUI exposes these actions:
 - `franka_teach_minimal.launch.py`: reduced teach/gravity launch used by the GUI
 - `franka_teach.config.yaml`: robot config passed into the minimal teach launch
 - `record_joint_trajectory.py`: records joint states to CSV
-- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, executes continuous arm trajectories, supports pause/resume, and replays recorded gripper events
+- `playback_joint_trajectory.py`: loads a CSV, applies bounded smoothing, blends from the current pose, executes continuous arm trajectories, supports pause/resume, auto-pauses on safety signals, and replays recorded gripper events
 
 ## How the GUI uses the launch files
 
@@ -168,6 +168,10 @@ It then waits for the playback stack to become ready before running [`playback_j
 - Supports `Pause` and `Resume` during playback
 - On pause, cancels the active arm trajectory goal and holds the current pose
 - On resume, rebuilds one new continuous trajectory from the current pose into the remaining recorded path
+- Monitors Franka robot-state safety signals during playback
+- Auto-pauses on Cartesian contact, collision indicators, or external joint torque above the software threshold
+- Uses a conservative software external joint torque auto-pause threshold of `5.0 Nm`
+- Uses Franka's hardware collision/reflex layer as the final safety backstop if contact escalates faster than software cancellation can settle the arm
 - Holds the arm only when recorded gripper events must execute
 - Waits briefly for the preferred Franka joint-state topic before starting from a fallback topic
 - On `Humble_KT_failsafe`, playback still runs through the normal MoveIt / `fr3_arm_controller` stack even though teach / gravity uses the experimental soft-stop controller
@@ -196,6 +200,7 @@ On the `Humble_KT_failsafe` branch, `ROS_SETUP` is intentionally pointed at:
 Teach/gravity robot settings live in [`franka_teach.config.yaml`](/home/parc/franka_kinesthetic_teaching_GUI/franka_teach.config.yaml).
 
 Playback constants such as smoothing, blend timing, and gripper action candidates live in [`playback_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/playback_joint_trajectory.py).
+That file also contains the software auto-pause thresholds and safety-monitor settings used during playback.
 Recorder topic-selection safeguards live in [`record_joint_trajectory.py`](/home/parc/franka_kinesthetic_teaching_GUI/record_joint_trajectory.py).
 GUI session logs are written under [`logs/`](/home/parc/franka_kinesthetic_teaching_GUI/logs:1).
 
@@ -248,6 +253,7 @@ The main window is intentionally simple: two rows of control buttons, a one-line
 - `Resume` is available only after a successful pause.
 - `Resume` rebuilds the remaining path from the robot's current measured pose and continues from the remaining recorded points instead of restarting the full trajectory.
 - Normal playback is continuous; pause/resume interrupts and reissues continuous execution only when requested.
+- The GUI also enters the same paused state automatically when the playback node requests a safety auto-pause.
 
 #### `Kill`
 
@@ -381,6 +387,28 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 - After cancelation, the player holds the current pose
 - `Resume` estimates already-consumed recorded points, then rebuilds a new continuous goal for the remaining path
 - Re-blending happens on startup and after an actual resume, not continuously during normal playback
+
+### Safety auto-pause behavior
+
+- During playback, the node subscribes to Franka robot state from `franka_robot_state_broadcaster`
+- Playback auto-pauses if any of these early-warning conditions become active
+- Cartesian contact indicator
+- Collision indicator
+- External joint torque estimate above the software threshold
+- The current software external joint torque auto-pause threshold is `5.0 Nm`
+- When auto-pause triggers, the active `FollowJointTrajectory` goal is canceled and the arm is commanded to hold its current pose
+- The GUI exposes this as a paused state so the operator can adjust the tool or environment and press `Resume`
+- `Resume` rebuilds a new continuous trajectory from the current measured pose into the remaining recorded path
+- This software layer is intentionally earlier and more conservative than Franka's hardware reflex layer
+- It does not replace Franka collision/reflex safety; a fast or hard contact can still escalate to a hardware reflex before software cancellation fully settles the arm
+
+### Franka contact and reflex relationship
+
+- Franka's collision behavior distinguishes `contact` from `collision`
+- Contact corresponds to the lower threshold band and is exposed through the robot-state indicators
+- Collision corresponds to the upper threshold band and can stop the robot in hardware
+- In this repo, the software auto-pause reacts to contact/collision indicators and low external torque before the motion should reach a full reflex stop
+- If the log reports `cartesian_reflex` or `joint_reflex`, that means Franka's built-in hardware safety stopped the motion anyway
 
 ### Replay safety margin
 

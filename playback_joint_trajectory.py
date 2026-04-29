@@ -7,6 +7,7 @@ import time
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
+from franka_msgs.msg import FrankaRobotState
 from franka_msgs.action import Grasp, Move
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -52,6 +53,7 @@ NAMESPACE_PREFIX = f"/{TEACH_NAMESPACE}" if TEACH_NAMESPACE else ""
 JOINT_STATES_TOPICS = ["/joint_states"]
 TRAJECTORY_TOPICS = ["/fr3_arm_controller/joint_trajectory"]
 TRAJECTORY_ACTIONS = ["/fr3_arm_controller/follow_joint_trajectory"]
+FRANKA_STATE_TOPICS = ["/franka_robot_state_broadcaster/robot_state"]
 if NAMESPACE_PREFIX:
     JOINT_STATES_TOPICS = [
         f"{NAMESPACE_PREFIX}/franka/joint_states",
@@ -60,6 +62,7 @@ if NAMESPACE_PREFIX:
     ]
     TRAJECTORY_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/joint_trajectory")
     TRAJECTORY_ACTIONS.insert(0, f"{NAMESPACE_PREFIX}/fr3_arm_controller/follow_joint_trajectory")
+    FRANKA_STATE_TOPICS.insert(0, f"{NAMESPACE_PREFIX}/franka_robot_state_broadcaster/robot_state")
 TOPIC_PRIORITY = {topic: index for index, topic in enumerate(JOINT_STATES_TOPICS)}
 PREFERRED_JOINT_STATE_TOPIC = JOINT_STATES_TOPICS[0]
 PREFERRED_TOPIC_GRACE_SEC = 2.0
@@ -76,6 +79,10 @@ GRIPPER_GRASP_ACTION_CANDIDATES = [
     f"/{TEACH_NAMESPACE}/fr3_gripper/grasp",
 ]
 GRIPPER_ACTION_WAIT_TIMEOUT_SEC = 8.0
+AUTO_PAUSE_ON_CONTACT = True
+AUTO_PAUSE_ON_COLLISION = True
+AUTO_PAUSE_EXT_TORQUE_THRESHOLD_NM = 5.0
+AUTO_PAUSE_DEBOUNCE_SEC = 0.10
 LOWER_JOINT_LIMITS = [-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159]
 UPPER_JOINT_LIMITS = [2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159]
 
@@ -99,9 +106,21 @@ class SmartTrajectoryPlayer(Node):
                     10,
                 )
             )
+        self.franka_state_subscriptions = []
+        for topic in FRANKA_STATE_TOPICS:
+            self.franka_state_subscriptions.append(
+                self.create_subscription(
+                    FrankaRobotState,
+                    topic,
+                    lambda msg, source_topic=topic: self.franka_state_callback(msg, source_topic),
+                    10,
+                )
+            )
 
         self.actual_positions = None
         self.active_joint_topic = None
+        self.latest_franka_state = None
+        self.active_franka_state_topic = None
         self.first_joint_state_time = None
         self.preferred_joint_state_seen = False
         self.full_sent = False
@@ -116,6 +135,9 @@ class SmartTrajectoryPlayer(Node):
         self.playback_thread = None
         self.limit_adjustment_counts = [0] * len(JOINT_NAMES)
         self.current_goal_handle = None
+        self.auto_pause_active = False
+        self.auto_pause_reason = None
+        self.threshold_violation_since = None
 
         self.recorded_points, self.gripper_events = self.load_recording(csv_file)
         if not self.recorded_points:
@@ -272,6 +294,79 @@ class SmartTrajectoryPlayer(Node):
         elif source_topic != self.active_joint_topic:
             return
         self.actual_positions = [joint_map[j] for j in JOINT_NAMES]
+
+    def franka_state_callback(self, msg, source_topic):
+        self.latest_franka_state = msg
+        if self.active_franka_state_topic is None:
+            self.active_franka_state_topic = source_topic
+            self.get_logger().info(f"Using Franka robot state from {source_topic}")
+
+    def vector3_active(self, vector_msg):
+        return bool(getattr(vector_msg, "x", 0.0) or getattr(vector_msg, "y", 0.0) or getattr(vector_msg, "z", 0.0))
+
+    def compute_auto_pause_reason(self):
+        state = self.latest_franka_state
+        if state is None:
+            return None
+
+        indicators = state.collision_indicators
+        if AUTO_PAUSE_ON_COLLISION:
+            if any(indicators.is_joint_collision):
+                return "joint collision indicator became active"
+            if (
+                self.vector3_active(indicators.is_cartesian_linear_collision)
+                or self.vector3_active(indicators.is_cartesian_angular_collision)
+            ):
+                return "cartesian collision indicator became active"
+
+        if AUTO_PAUSE_ON_CONTACT:
+            if any(indicators.is_joint_contact):
+                return "joint contact indicator became active"
+            if (
+                self.vector3_active(indicators.is_cartesian_linear_contact)
+                or self.vector3_active(indicators.is_cartesian_angular_contact)
+            ):
+                return "cartesian contact indicator became active"
+
+        external_torque = getattr(state.tau_ext_hat_filtered, "effort", [])
+        if external_torque:
+            peak_torque = max(abs(value) for value in external_torque)
+            if peak_torque >= AUTO_PAUSE_EXT_TORQUE_THRESHOLD_NM:
+                return (
+                    f"external joint torque reached {peak_torque:.2f} Nm "
+                    f"(threshold {AUTO_PAUSE_EXT_TORQUE_THRESHOLD_NM:.2f} Nm)"
+                )
+
+        return None
+
+    def check_auto_pause_condition(self):
+        if self.pause_requested or self.stop_requested:
+            self.threshold_violation_since = None
+            return
+
+        try:
+            reason = self.compute_auto_pause_reason()
+        except Exception as exc:
+            self.threshold_violation_since = None
+            self.get_logger().error(f"Auto-pause monitor error: {exc}")
+            return
+        if reason is None:
+            self.threshold_violation_since = None
+            return
+
+        now = time.monotonic()
+        if self.threshold_violation_since is None:
+            self.threshold_violation_since = now
+            return
+
+        if now - self.threshold_violation_since < AUTO_PAUSE_DEBOUNCE_SEC:
+            return
+
+        self.pause_requested = True
+        self.auto_pause_active = True
+        self.auto_pause_reason = reason
+        self.threshold_violation_since = None
+        self.get_logger().warn(f"Playback auto-paused: {reason}")
 
     def update(self):
         if self.full_sent:
@@ -510,8 +605,9 @@ class SmartTrajectoryPlayer(Node):
             send_future = client.send_goal_async(goal_msg)
             while rclpy.ok() and not send_future.done():
                 self.update_control_state()
+                self.check_auto_pause_condition()
                 if self.stop_requested:
-                    return "stopped", start_positions
+                    return "stopped", start_positions, 0
                 time.sleep(PAUSE_POLL_SEC)
 
             goal_handle = send_future.result()
@@ -523,6 +619,7 @@ class SmartTrajectoryPlayer(Node):
             goal_start_time = time.monotonic()
             while rclpy.ok() and not result_future.done():
                 self.update_control_state()
+                self.check_auto_pause_condition()
                 if self.pause_requested:
                     elapsed_time = time.monotonic() - goal_start_time
                     consumed_points = self.estimate_consumed_recorded_points(
@@ -595,6 +692,9 @@ class SmartTrajectoryPlayer(Node):
             self.get_logger().info("Pause requested by GUI")
         elif command == "resume":
             self.pause_requested = False
+            self.auto_pause_active = False
+            self.auto_pause_reason = None
+            self.threshold_violation_since = None
             self.get_logger().info("Resume requested by GUI")
         elif command == "stop":
             self.get_logger().info("Stop requested by GUI")
@@ -616,13 +716,24 @@ class SmartTrajectoryPlayer(Node):
         while not self.stop_requested and self.pause_requested:
             if self.actual_positions is not None and not hold_published:
                 self.publish_hold_position(ready_publishers, self.actual_positions)
-                self.get_logger().info("Playback paused; holding current pose until resume")
+                if self.auto_pause_active and self.auto_pause_reason:
+                    self.get_logger().warn(
+                        f"Playback paused automatically; holding current pose until resume ({self.auto_pause_reason})"
+                    )
+                else:
+                    self.get_logger().info("Playback paused; holding current pose until resume")
                 hold_published = True
             self.update_control_state()
             time.sleep(PAUSE_POLL_SEC)
 
         if not self.stop_requested and hold_published:
-            self.get_logger().info("Playback resumed; rebuilding remaining trajectory from current pose")
+            if self.auto_pause_active:
+                self.get_logger().info("Playback resumed after auto-pause; rebuilding remaining trajectory from current pose")
+            else:
+                self.get_logger().info("Playback resumed; rebuilding remaining trajectory from current pose")
+            self.auto_pause_active = False
+            self.auto_pause_reason = None
+            self.threshold_violation_since = None
 
     def run_segmented_playback(self, ready_publishers):
         try:

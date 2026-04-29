@@ -387,6 +387,25 @@ class FR3TeachRunGUI(tk.Tk):
         self._refresh_controls()
 
     def _handle_runtime_log_line(self, line: str):
+        if "Playback auto-paused:" in line:
+            if self.running:
+                self.playback_paused = True
+                self.run_completion_status = None
+                self.status_var.set(line.strip())
+                self._refresh_controls()
+            return
+        if "Playback paused automatically; holding current pose until resume" in line:
+            if self.running:
+                self.playback_paused = True
+                self.status_var.set(line.strip())
+                self._refresh_controls()
+            return
+        if "Playback resumed after auto-pause" in line or "Playback resumed; rebuilding remaining trajectory from current pose" in line:
+            if self.running:
+                self.playback_paused = False
+                self.status_var.set("Running trajectory…")
+                self._refresh_controls()
+            return
         reflex_reason = self._extract_reflex_stop_reason(line)
         if reflex_reason is not None:
             if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
