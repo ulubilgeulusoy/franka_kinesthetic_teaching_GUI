@@ -49,6 +49,11 @@ from rclpy.executors import SingleThreadedExecutor
 from franka_msgs.action import Grasp, Move
 from trajectory_msgs.msg import JointTrajectory
 
+try:
+    from rclpy._rclpy_pybind11 import RCLError
+except ImportError:
+    RCLError = RuntimeError
+
 # --------- CONFIG (edit if needed) ---------
 ROBOT_IP = "172.16.0.2"  # change if needed
 TEACH_NAMESPACE = "NS_1"
@@ -155,6 +160,8 @@ class FR3TeachRunGUI(tk.Tk):
         self.last_teach_failure_time = 0.0
         self.last_reflex_stop_reason = None
         self.last_reflex_stop_time = 0.0
+        self.last_run_failure = None
+        self.last_run_failure_time = 0.0
         self.log_file_handle = None
         self.session_log_path = None
 
@@ -185,8 +192,20 @@ class FR3TeachRunGUI(tk.Tk):
 
     def ensure_ros_client_ready(self):
         with self.ros_init_lock:
+            context_ok = False
+            if self.ros_initialized:
+                try:
+                    context_ok = rclpy.ok()
+                except Exception:
+                    context_ok = False
+            if self.ros_initialized and not context_ok:
+                self.ros_initialized = False
             if not self.ros_initialized:
-                rclpy.init(args=None)
+                try:
+                    rclpy.init(args=None)
+                except RuntimeError:
+                    if not rclpy.ok():
+                        raise
                 self.ros_initialized = True
 
     def set_gripper_busy(self, busy: bool):
@@ -199,8 +218,13 @@ class FR3TeachRunGUI(tk.Tk):
         try:
             while rclpy.ok() and not future.done():
                 executor.spin_once(timeout_sec=timeout_sec)
+        except RCLError as exc:
+            raise RuntimeError(f"ROS client context became invalid while waiting for action result: {exc}") from exc
         finally:
-            executor.remove_node(node)
+            try:
+                executor.remove_node(node)
+            except Exception:
+                pass
 
     def _setup_session_logging(self):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -382,6 +406,16 @@ class FR3TeachRunGUI(tk.Tk):
         )
         self._refresh_controls()
 
+    def _handle_run_failure(self, reason: str):
+        self.last_run_failure = reason.strip()
+        self.last_run_failure_time = time.time()
+        self.run_completion_status = self.last_run_failure
+        self.playback_paused = False
+        if self.playback_control_path:
+            self._write_playback_control("stop")
+        self.status_var.set(self.last_run_failure)
+        self._refresh_controls()
+
     def _mark_teach_failure(self, reason: str):
         self.last_teach_failure = reason
         self.last_teach_failure_time = time.time()
@@ -411,14 +445,26 @@ class FR3TeachRunGUI(tk.Tk):
             return
         reflex_reason = self._extract_reflex_stop_reason(line)
         if reflex_reason is not None:
-            if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
+            if self.running or self.run_pg.is_alive():
+                self._handle_run_failure(
+                    "Playback aborted by Franka safety reflex "
+                    f"({reflex_reason}). Restart the run stack before resuming."
+                )
+            elif self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
                 self._handle_reflex_stop(reflex_reason, line)
             return
         reason = self._extract_teach_failure_reason(line)
-        if reason is None:
-            return
-        if self.teach_pg.is_alive() or self.teaching or self.gravity_mode:
+        if reason is not None and (self.teach_pg.is_alive() or self.teaching or self.gravity_mode):
             self._mark_teach_failure(reason)
+            return
+        lowered = line.lower()
+        if self.running or self.run_pg.is_alive():
+            if "process has died" in lowered and "ros2_control_node" in lowered:
+                self._handle_run_failure("Run stack crashed: ros2_control_node died. Restart required before resume.")
+            elif "waiting for trajectory controller subscriber on:" in lowered:
+                self._handle_run_failure("Run stack is no longer healthy: trajectory controller subscriber disappeared.")
+            elif "[exception]" in lowered and "ros client context became invalid" in lowered:
+                self._handle_run_failure("Run stack shut down while a ROS action was in flight.")
 
     def _poll_queue(self):
         try:
@@ -483,6 +529,8 @@ class FR3TeachRunGUI(tk.Tk):
             return False, "Wait for the gripper command to finish."
         if self.gripper_node_pg.is_alive():
             return False, "Standalone gripper node is still active."
+        if self.last_run_failure and time.time() - self.last_run_failure_time < 5.0:
+            return False, self.last_run_failure
         return True, "Robot is ready to run."
 
     # Actions
@@ -725,7 +773,10 @@ class FR3TeachRunGUI(tk.Tk):
                     trial_client.destroy()
                 time.sleep(0.1)
         finally:
-            node.destroy_node()
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
         return None
 
     def ensure_gripper_ready(self, action_type, candidates, timeout_sec: float = GRIPPER_ACTION_WAIT_TIMEOUT_SEC):
@@ -819,8 +870,21 @@ class FR3TeachRunGUI(tk.Tk):
         def worker():
             with self.gripper_action_lock:
                 self.set_gripper_busy(True)
+                try:
+                    self.ensure_ros_client_ready()
+                except Exception as exc:
+                    self.line_queue.put(f"Unable to initialize ROS client for gripper {label.lower()} command: {exc}")
+                    self.set_gripper_busy(False)
+                    return
                 candidates = self.get_gripper_move_action_candidates()
                 launched_standalone_node = False
+                if self.running or self.run_pg.is_alive():
+                    self.line_queue.put(
+                        "Refusing standalone gripper open while the run stack is active or recovering. "
+                        "Stop or restart playback first."
+                    )
+                    self.set_gripper_busy(False)
+                    return
                 if self.should_use_teach_gripper_server():
                     action_name = self.wait_for_gripper_action_server(Move, candidates)
                     if action_name is None:
@@ -881,7 +945,10 @@ class FR3TeachRunGUI(tk.Tk):
                 finally:
                     if client is not None:
                         client.destroy()
-                    node.destroy_node()
+                    try:
+                        node.destroy_node()
+                    except Exception:
+                        pass
                     if launched_standalone_node:
                         self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
@@ -897,8 +964,21 @@ class FR3TeachRunGUI(tk.Tk):
         def worker():
             with self.gripper_action_lock:
                 self.set_gripper_busy(True)
+                try:
+                    self.ensure_ros_client_ready()
+                except Exception as exc:
+                    self.line_queue.put(f"Unable to initialize ROS client for gripper {label.lower()} command: {exc}")
+                    self.set_gripper_busy(False)
+                    return
                 candidates = self.get_gripper_grasp_action_candidates()
                 launched_standalone_node = False
+                if self.running or self.run_pg.is_alive():
+                    self.line_queue.put(
+                        "Refusing standalone gripper close while the run stack is active or recovering. "
+                        "Stop or restart playback first."
+                    )
+                    self.set_gripper_busy(False)
+                    return
                 if self.should_use_teach_gripper_server():
                     action_name = self.wait_for_gripper_action_server(Grasp, candidates)
                     if action_name is None:
@@ -962,7 +1042,10 @@ class FR3TeachRunGUI(tk.Tk):
                 finally:
                     if client is not None:
                         client.destroy()
-                    node.destroy_node()
+                    try:
+                        node.destroy_node()
+                    except Exception:
+                        pass
                     if launched_standalone_node:
                         self.shutdown_gripper_node()
                     self.set_gripper_busy(False)
@@ -1015,6 +1098,10 @@ class FR3TeachRunGUI(tk.Tk):
     def resume_run(self):
         if not self.running or not self.playback_paused or self.current_playback_proc is None:
             return
+        if self.last_run_failure and time.time() - self.last_run_failure_time < 5.0:
+            self.status_var.set(self.last_run_failure)
+            self._refresh_controls()
+            return
         if self._write_playback_control("resume"):
             self.playback_paused = False
             self._append_log("Resume requested for trajectory playback…")
@@ -1027,6 +1114,8 @@ class FR3TeachRunGUI(tk.Tk):
             return
 
         self.run_completion_status = None
+        self.last_run_failure = None
+        self.last_run_failure_time = 0.0
         self.playback_paused = False
         control_fd, control_path = tempfile.mkstemp(prefix="fr3_playback_control_", suffix=".json")
         os.close(control_fd)
@@ -1087,7 +1176,7 @@ class FR3TeachRunGUI(tk.Tk):
         self.playback_control_path = None
         self._post_state_update({"running_active": 0})
         self.running = False
-        final_status = self.run_completion_status or "Run finished."
+        final_status = self.run_completion_status or self.last_run_failure or "Run finished."
         self.run_completion_status = None
         # UI updates must be done in main thread; schedule via after
         self.after(0, lambda: self.btn_run.configure(text="Run Trajectory"))

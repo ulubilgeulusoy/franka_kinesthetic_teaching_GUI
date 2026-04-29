@@ -16,6 +16,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+try:
+    from rclpy._rclpy_pybind11 import RCLError
+except ImportError:
+    RCLError = RuntimeError
+
 JOINT_NAMES = [
     "fr3_joint1", "fr3_joint2", "fr3_joint3",
     "fr3_joint4", "fr3_joint5", "fr3_joint6", "fr3_joint7"
@@ -715,7 +720,12 @@ class SmartTrajectoryPlayer(Node):
         hold_published = False
         while not self.stop_requested and self.pause_requested:
             if self.actual_positions is not None and not hold_published:
-                self.publish_hold_position(ready_publishers, self.actual_positions)
+                try:
+                    self.publish_hold_position(ready_publishers, self.actual_positions)
+                except RCLError as exc:
+                    self.get_logger().error(f"Failed to publish hold position during pause: {exc}")
+                    self.request_stop()
+                    return
                 if self.auto_pause_active and self.auto_pause_reason:
                     self.get_logger().warn(
                         f"Playback paused automatically; holding current pose until resume ({self.auto_pause_reason})"
@@ -883,7 +893,11 @@ class SmartTrajectoryPlayer(Node):
 
     def spin_until_future_complete(self, executor, future, timeout_sec=0.1):
         while rclpy.ok() and not future.done():
-            executor.spin_once(timeout_sec=timeout_sec)
+            try:
+                executor.spin_once(timeout_sec=timeout_sec)
+            except (ExternalShutdownException, RCLError):
+                self.request_stop()
+                break
 
     def compute_blend_time(self, max_error):
         if max_error <= START_BLEND_EPSILON_RAD:
@@ -916,13 +930,24 @@ def main(args=None):
         print("Executed")
     except ExternalShutdownException:
         pass
+    except RCLError as exc:
+        print(f"ROS shutdown detected in playback node: {exc}")
     except KeyboardInterrupt:
         pass
     finally:
-        executor.remove_node(node)
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        try:
+            executor.remove_node(node)
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
         print("Shutdown")
 
 
