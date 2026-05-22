@@ -4,18 +4,15 @@ A small Tkinter desktop application for kinesthetic teaching and trajectory play
 
 ## Validated environment
 
-This branch is currently set up and maintained for a native Ubuntu 22.04 + ROS 2 Humble workflow.
+This branch is currently set up and validated for a native Ubuntu 22.04.5 + ROS 2 Humble workflow.
 
-- OS: Ubuntu 22.04 LTS
-- ROS distro: ROS 2 Humble
+- OS: Ubuntu 22.04.5 LTS
+- Real-Time Kernel: Linux 6.9.0-rt5 (PREEMPT_RT enabled)
+- ROS Version: ROS 2 Humble
 - Python: Python 3
 - Robot: Franka Research 3 (FR3)
-
-Important notes:
-- This branch is the Humble-oriented branch and does not track the Jazzy setup from `main`.
-- `run_gui.sh` is intended to be the entry point and should source `/opt/ros/humble/setup.bash` and your local Franka workspace.
-- A realtime kernel is still recommended for smoother control behavior, even though the GUI can run without perfect realtime tuning.
-
+- Robot Library: libfranka 0.15.0
+- Real-Time Requirement: PREEMPT_RT kernel required for deterministic control
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
@@ -370,5 +367,6 @@ This project was developed with assistance from Codex by OpenAI.
 This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 This branch targets Ubuntu 22.04 with ROS 2 Humble. This project interfaces with ROS 2, the Franka ROS 2 stack, MoveIt, and related system packages, which are governed by their own licenses. Review those licenses before redistributing a bundled application, Docker image, or robot-control deployment environment.
+
 
 
