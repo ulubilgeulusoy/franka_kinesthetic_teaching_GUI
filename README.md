@@ -4,22 +4,15 @@ A small Tkinter desktop application for kinesthetic teaching and trajectory play
 
 ## Validated environment
 
-This repo is currently set up and validated for a native Ubuntu 24.04 + ROS 2 Jazzy workflow.
+This branch is currently set up and validated for a native Ubuntu 24.04 + ROS 2 Jazzy workflow.
 
-- OS: Ubuntu 24.04 LTS
-- ROS distro: ROS 2 Jazzy
+- OS: Ubuntu 24.04 LTS (Noble)
+- Real-Time Kernel: Linux 6.12.79-rt17 (PREEMPT_RT enabled)
+- ROS Version: ROS 2 Jazzy
 - Python: Python 3
 - Robot: Franka Research 3 (FR3)
-- Robot system version used during validation: 5.7.2
-- `libfranka` version used during validation: `0.15.3`
-- Kernel used during validation: `6.12.79-rt17`
-
-Important notes:
-- This repo is not currently documented as a Humble-first setup anymore. The working configuration in this machine is ROS 2 Jazzy.
-- The Franka stack versions above matter. Newer `franka_ros2` / `libfranka` combinations can fail against an FR3 on system version `5.7.2`.
-- A realtime kernel is recommended for smoother control behavior. The GUI and teach/playback flows can work without perfect realtime tuning, but you may still see non-fatal warnings such as realtime publisher lock failures.
-- `run_gui.sh` is intended to be the entry point and already sources `/opt/ros/jazzy/setup.bash` and `/home/parc/franka_ws/install/setup.bash`.
-
+- Robot Library: libfranka 0.19.0
+- Real-Time Requirement: PREEMPT_RT kernel required for deterministic control
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
@@ -288,5 +281,6 @@ This project was developed with assistance from Codex by OpenAI.
 This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 This branch targets Ubuntu 24.04 with ROS 2 Jazzy. This project interfaces with ROS 2, the Franka ROS 2 stack, MoveIt, and related system packages, which are governed by their own licenses. Review those licenses before redistributing a bundled application, Docker image, or robot-control deployment environment.
+
 
 
