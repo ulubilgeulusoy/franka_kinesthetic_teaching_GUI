@@ -13,6 +13,16 @@ This branch is currently set up and validated for a native Ubuntu 24.04 + ROS 2 
 - Robot: Franka Research 3 (FR3)
 - Robot Library: libfranka 0.19.0
 - Real-Time Requirement: PREEMPT_RT kernel required for deterministic control
+
+## Branch matrix
+
+| Branch | Ubuntu | ROS 2 | Kernel | libfranka | Workspace |
+| --- | --- | --- | --- | --- | --- |
+| `main` | ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white) | ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white) | ![Kernel 6.12.79-rt17](https://img.shields.io/badge/Kernel-6.12.79--rt17-2F855A) | ![libfranka 0.19.0](https://img.shields.io/badge/libfranka-0.19.0-1F6FEB) | ![Workspace standard](https://img.shields.io/badge/Workspace-Standard%20ROS%202-0A7EA4) |
+| `Jazzy_KT` | ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white) | ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white) | ![Kernel 6.12.79-rt17](https://img.shields.io/badge/Kernel-6.12.79--rt17-2F855A) | ![libfranka 0.19.0](https://img.shields.io/badge/libfranka-0.19.0-1F6FEB) | ![Workspace standard](https://img.shields.io/badge/Workspace-Standard%20ROS%202-0A7EA4) |
+| `Humble_KT` | ![Ubuntu 22.04.5](https://img.shields.io/badge/Ubuntu-22.04.5-E95420?logo=ubuntu&logoColor=white) | ![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros&logoColor=white) | ![Kernel 6.9.0-rt5](https://img.shields.io/badge/Kernel-6.9.0--rt5-2F855A) | ![libfranka 0.15.0](https://img.shields.io/badge/libfranka-0.15.0-1F6FEB) | ![Workspace standard](https://img.shields.io/badge/Workspace-Standard%20ROS%202-0A7EA4) |
+| `Humble_KT_failsafe` | ![Ubuntu 22.04.5](https://img.shields.io/badge/Ubuntu-22.04.5-E95420?logo=ubuntu&logoColor=white) | ![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros&logoColor=white) | ![Kernel 6.9.0-rt5](https://img.shields.io/badge/Kernel-6.9.0--rt5-2F855A) | ![libfranka 0.15.0](https://img.shields.io/badge/libfranka-0.15.0-1F6FEB) | ![Workspace custom](https://img.shields.io/badge/Workspace-Custom%20(~%2Ffranka_ws_jointfailsafe)-B45309) |
+
 ## What this repo does
 
 This repo contains one main application: a GUI that manages two workflows:
