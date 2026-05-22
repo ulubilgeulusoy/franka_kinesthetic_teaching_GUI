@@ -280,11 +280,6 @@ The current playback behavior is implemented in [`playback_joint_trajectory.py`]
 git clone https://github.com/ulubilgeulusoy/franka_kinesthetic_teaching_GUI.git
 cd franka_kinesthetic_teaching_GUI
 ```
-
-## Acknowledgements
-
-This project was developed with assistance from Codex by OpenAI.
-
 ## License
 
 This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
