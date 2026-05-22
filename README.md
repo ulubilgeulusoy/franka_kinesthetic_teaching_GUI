@@ -465,3 +465,11 @@ git checkout Humble_KT
 ## Acknowledgements
 
 This project was developed with assistance from Codex by OpenAI.
+
+## License
+
+This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+This branch targets Ubuntu 22.04 with ROS 2 Humble and integrates the failsafe backend workspace (~/franka_ws_jointfailsafe). This project interfaces with ROS 2, the Franka ROS 2 stack, MoveIt, and related system packages, which are governed by their own licenses. Review those licenses before redistributing a bundled application, Docker image, or robot-control deployment environment.
+
+
